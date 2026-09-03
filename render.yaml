@@ -1,0 +1,30 @@
+# Render blueprint. Render's free tier has no MySQL, so the database lives with an external
+# provider (Aiven, TiDB Cloud and Clever Cloud all have a free MySQL) and its credentials are
+# entered in the Render dashboard. Every value marked "sync: false" is prompted for there and
+# is never stored in this repository.
+services:
+  - type: web
+    name: parking-101
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: MYSQL_HOST
+        sync: false
+      - key: MYSQL_PORT
+        value: "3306"
+      - key: MYSQL_DATABASE
+        sync: false
+      - key: MYSQL_USER
+        sync: false
+      - key: MYSQL_PASSWORD
+        sync: false
+      # Hosted MySQL requires TLS. "system" uses the image's CA bundle, which is enough for
+      # most providers; paste the provider's ca.pem contents here instead if it is not.
+      - key: MYSQL_SSL_CA
+        value: system
+      # A shared code that gates the whole page. Strongly recommended on a public URL: the
+      # app has no per-person login, so without it any visitor can book and cancel.
+      - key: PARKING_ACCESS_CODE
+        sync: false

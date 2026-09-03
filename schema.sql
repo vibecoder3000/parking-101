@@ -10,9 +10,6 @@ INSERT INTO members (name) VALUES
   ('Nadia'), ('Laurence'), ('Lara'), ('Jil'), ('Erik')
 ON DUPLICATE KEY UPDATE active = 1;
 
--- Correct the member name if an earlier version created Jill with two Ls.
-UPDATE members SET name = 'Jil' WHERE name = 'Jill';
-
 CREATE TABLE IF NOT EXISTS monthly_plans (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   member_name VARCHAR(80) NOT NULL,
@@ -60,3 +57,21 @@ CREATE TABLE IF NOT EXISTS fob_log (
   CONSTRAINT fk_fob_member FOREIGN KEY (member_name) REFERENCES members(name) ON UPDATE CASCADE,
   CONSTRAINT chk_fob_slot CHECK (slot_number IN (1, 2))
 ) ENGINE=InnoDB;
+
+-- Older databases created the member as 'Jill'. The rename used to sit directly after the
+-- INSERT above, where 'Jil' already exists, so it hit the primary key with a duplicate-entry
+-- error and aborted the rest of the script on exactly the databases it was meant to repair.
+-- It runs last instead, once every table exists, and merges rather than collides:
+-- UPDATE IGNORE renames what it can (ON UPDATE CASCADE carries the child rows along), the
+-- child updates catch a database that somehow holds both names, and the deletes clear the
+-- rows IGNORE skipped because 'Jil' already had that exact week. Re-running is harmless.
+UPDATE IGNORE members SET name = 'Jil' WHERE name = 'Jill';
+UPDATE IGNORE monthly_plans        SET member_name = 'Jil' WHERE member_name = 'Jill';
+UPDATE IGNORE weekly_registrations SET member_name = 'Jil' WHERE member_name = 'Jill';
+UPDATE IGNORE weekly_allocations   SET member_name = 'Jil' WHERE member_name = 'Jill';
+UPDATE IGNORE fob_log              SET member_name = 'Jil' WHERE member_name = 'Jill';
+DELETE FROM monthly_plans        WHERE member_name = 'Jill';
+DELETE FROM weekly_registrations WHERE member_name = 'Jill';
+DELETE FROM weekly_allocations   WHERE member_name = 'Jill';
+DELETE FROM fob_log              WHERE member_name = 'Jill';
+DELETE FROM members WHERE name = 'Jill';

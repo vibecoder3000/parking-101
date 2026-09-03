@@ -15,21 +15,55 @@ function parking_json(mixed $value): string {
     return json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
 }
 
+// Credentials come from the environment where the host supplies them (Render and most
+// other PaaS), and from config.php otherwise, so no secret has to live in the repository.
+function parking_config(): array {
+    $config = ['host' => null, 'port' => '3306', 'database' => null, 'user' => null, 'password' => '', 'ssl_ca' => null, 'ssl_verify' => true];
+    $configFile = __DIR__ . '/config.php';
+    if (is_file($configFile)) $config = array_merge($config, (array)require $configFile);
+    $env = static function (string $name): ?string {
+        $value = getenv($name);
+        return ($value === false || $value === '') ? null : $value;
+    };
+    foreach (['host' => 'MYSQL_HOST', 'port' => 'MYSQL_PORT', 'database' => 'MYSQL_DATABASE', 'user' => 'MYSQL_USER', 'password' => 'MYSQL_PASSWORD', 'ssl_ca' => 'MYSQL_SSL_CA'] as $key => $name) {
+        $value = $env($name);
+        if ($value !== null) $config[$key] = $value;
+    }
+    $verify = $env('MYSQL_SSL_VERIFY');
+    if ($verify !== null) $config['ssl_verify'] = !in_array(strtolower($verify), ['0', 'false', 'no', 'off'], true);
+    return $config;
+}
+
 function parking_db(): PDO {
     static $pdo = null;
     if ($pdo instanceof PDO) return $pdo;
-    $configFile = __DIR__ . '/config.php';
-    if (!is_file($configFile)) {
+    $config = parking_config();
+    if (!$config['host'] || !$config['database'] || !$config['user']) {
         http_response_code(500);
-        exit('Missing config.php. Copy config.example.php to config.php and add the MySQL credentials.');
+        exit('No database configured. Copy config.example.php to config.php, or set MYSQL_HOST, MYSQL_DATABASE, MYSQL_USER and MYSQL_PASSWORD.');
     }
-    $config = require $configFile;
-    $dsn = sprintf('mysql:host=%s;dbname=%s;charset=utf8mb4', $config['host'], $config['database']);
-    $pdo = new PDO($dsn, $config['user'], $config['password'], [
+    $dsn = sprintf('mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4', $config['host'], $config['port'], $config['database']);
+    $options = [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         PDO::ATTR_EMULATE_PREPARES => false,
-    ]);
+    ];
+    // Hosted MySQL (Aiven, TiDB Cloud, Clever Cloud) only accepts TLS connections. The CA can
+    // be a file path, the literal 'system' for the image's own bundle, or — because a PaaS
+    // dashboard has nowhere to put a file — the certificate text itself in the variable.
+    $ca = $config['ssl_ca'];
+    if ($ca === 'system') {
+        foreach (['/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt'] as $bundle) {
+            if (is_file($bundle)) { $ca = $bundle; break; }
+        }
+    } elseif ($ca && str_starts_with(ltrim($ca), '-----BEGIN')) {
+        $path = sys_get_temp_dir() . '/parking-mysql-ca-' . substr(sha1($ca), 0, 12) . '.pem';
+        if (!is_file($path)) file_put_contents($path, ltrim($ca));
+        $ca = $path;
+    }
+    if ($ca) $options[PDO::MYSQL_ATTR_SSL_CA] = $ca;
+    if (!$config['ssl_verify']) $options[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = false;
+    $pdo = new PDO($dsn, $config['user'], (string)$config['password'], $options);
     return $pdo;
 }
 
@@ -162,6 +196,33 @@ function parking_usage(PDO $pdo, int $year): array {
     return $usage;
 }
 
+// A member who has already used the annual maximum must not take a space: they would fill
+// one of the two candidate slots and then be skipped by the allocation, wasting the space.
+function parking_annual_count(PDO $pdo, string $member, string $weekStart): int {
+    $year = (int)substr($weekStart, 0, 4);
+    $stmt = $pdo->prepare('SELECT COUNT(*) FROM weekly_allocations WHERE member_name = ? AND week_start BETWEEN ? AND ?');
+    $stmt->execute([$member, sprintf('%04d-01-01', $year), sprintf('%04d-12-31', $year)]);
+    return (int)$stmt->fetchColumn();
+}
+
+// Real usage and the last allocated week per member, for every year the page can display.
+// The ledger used to be hard-coded demo numbers in the browser.
+function parking_ledger(PDO $pdo, int $fromYear, int $toYear): array {
+    $stmt = $pdo->prepare('SELECT YEAR(week_start) AS year, member_name, COUNT(*) AS total, MAX(week_start) AS last_week FROM weekly_allocations WHERE week_start BETWEEN ? AND ? GROUP BY year, member_name');
+    $stmt->execute([sprintf('%04d-01-01', $fromYear), sprintf('%04d-12-31', $toYear)]);
+    $ledger = [];
+    for ($year = $fromYear; $year <= $toYear; $year++) {
+        $ledger[$year] = ['usage' => array_fill_keys(PARKING_MEMBERS, 0), 'lastWeek' => array_fill_keys(PARKING_MEMBERS, null)];
+    }
+    foreach ($stmt as $row) {
+        $year = (int)$row['year'];
+        if (!isset($ledger[$year]) || !in_array($row['member_name'], PARKING_MEMBERS, true)) continue;
+        $ledger[$year]['usage'][$row['member_name']] = (int)$row['total'];
+        $ledger[$year]['lastWeek'][$row['member_name']] = $row['last_week'];
+    }
+    return $ledger;
+}
+
 // Everyone competing for a space in one week: monthly plans plus late weekly registrations.
 // The two-space capacity is counted against this union, never against one table alone.
 // Returned oldest booking first: the order is the first-come, first-served queue.
@@ -173,6 +234,14 @@ function parking_week_candidates(PDO $pdo, string $weekStart): array {
 
 // Members holding one of the week's spaces through a monthly plan. They keep the space
 // and cannot be removed by someone else's weekly registration.
+// Only the weekly_registrations rows. The client echoes this list back when it saves, so a
+// page loaded before someone else registered cannot silently delete that registration.
+function parking_week_registered(PDO $pdo, string $weekStart): array {
+    $stmt = $pdo->prepare('SELECT member_name FROM weekly_registrations WHERE week_start = ? ORDER BY member_name');
+    $stmt->execute([$weekStart]);
+    return array_column($stmt->fetchAll(), 'member_name');
+}
+
 function parking_week_planned(PDO $pdo, string $weekStart): array {
     $stmt = $pdo->prepare('SELECT member_name FROM monthly_plans WHERE week_start = ? ORDER BY member_name');
     $stmt->execute([$weekStart]);
@@ -183,10 +252,19 @@ function parking_week_planned(PDO $pdo, string $weekStart): array {
 // makes the count-then-insert atomic when several people save at the same moment.
 // MySQL frees the lock when the connection closes, which also covers the exit() inside
 // parking_ok() and parking_fail().
-function parking_lock_week(PDO $pdo, string $weekStart): void {
+function parking_try_lock(PDO $pdo, string $name): bool {
     $stmt = $pdo->prepare('SELECT GET_LOCK(?, 5)');
-    $stmt->execute(['parking_week_' . $weekStart]);
-    if ((int)$stmt->fetchColumn() !== 1) parking_fail('Another booking for that week is being saved. Please try again.', 503);
+    $stmt->execute([$name]);
+    return (int)$stmt->fetchColumn() === 1;
+}
+
+function parking_release_lock(PDO $pdo, string $name): void {
+    $stmt = $pdo->prepare('SELECT RELEASE_LOCK(?)');
+    $stmt->execute([$name]);
+}
+
+function parking_lock_week(PDO $pdo, string $weekStart): void {
+    if (!parking_try_lock($pdo, 'parking_week_' . $weekStart)) parking_fail('Another booking for that week is being saved. Please try again.', 503);
 }
 
 function parking_auto_allocate(PDO $pdo, string $weekStart): void {
@@ -201,6 +279,21 @@ function parking_auto_allocate(PDO $pdo, string $weekStart): void {
     $check = $pdo->prepare('SELECT COUNT(*) FROM weekly_allocations WHERE week_start = ?');
     $check->execute([$weekStart]);
     if ((int)$check->fetchColumn() > 0) return;
+    // Every open browser polls this every 60 seconds, so two requests can pass the check
+    // above at the same moment and both insert slot 1. A lock separate from the booking lock
+    // serialises them; whoever loses simply skips, because the work is already done.
+    $lock = 'parking_alloc_' . $weekStart;
+    if (!parking_try_lock($pdo, $lock)) return;
+    try {
+        $check->execute([$weekStart]);
+        if ((int)$check->fetchColumn() > 0) return;
+        parking_allocate_week($pdo, $weekStart);
+    } finally {
+        parking_release_lock($pdo, $lock);
+    }
+}
+
+function parking_allocate_week(PDO $pdo, string $weekStart): void {
     // Monthly plans automatically participate in that week's allocation.
     // The Thursday/Friday registration remains available for late additions.
     // parking_week_candidates() already returns the queue in booking order, so the two
@@ -241,6 +334,15 @@ function parking_state(PDO $pdo): array {
     $stmt = $pdo->prepare('SELECT member_name, week_start FROM monthly_plans WHERE week_start BETWEEN ? AND ? ORDER BY week_start');
     $stmt->execute([$planWeeks[0] ?? "$nextMonth[value]-01", end($planWeeks) ?? "$nextMonth[value]-31"]);
     foreach ($stmt as $row) if (isset($allowed[$row['week_start']])) $plans[$row['member_name']][$row['week_start']] = true;
+    // Occupancy per planning week, counted across both booking routes. The grid used to
+    // count monthly plans only, so at a month boundary it offered a week the server refuses.
+    $planWeekUsage = array_fill_keys($planWeeks, 0);
+    if ($planWeeks) {
+        $marks = implode(',', array_fill(0, count($planWeeks), '?'));
+        $stmt = $pdo->prepare("SELECT week_start, COUNT(*) AS total FROM (SELECT week_start, member_name FROM monthly_plans WHERE week_start IN ($marks) UNION SELECT week_start, member_name FROM weekly_registrations WHERE week_start IN ($marks)) AS booked GROUP BY week_start");
+        $stmt->execute([...$planWeeks, ...$planWeeks]);
+        foreach ($stmt as $row) $planWeekUsage[$row['week_start']] = (int)$row['total'];
+    }
     $registrations = parking_week_candidates($pdo, $nextWeek);
     $stmt = $pdo->prepare('SELECT slot_number, member_name FROM weekly_allocations WHERE week_start = ? ORDER BY slot_number');
     $stmt->execute([$nextWeek]);
@@ -257,11 +359,17 @@ function parking_state(PDO $pdo): array {
         'nextMonth' => $nextMonth,
         'weekMonth' => $weekMonth,
         'monthlyPlans' => $plans,
+        'planWeeks' => $planWeeks,
+        'planWeekUsage' => $planWeekUsage,
         'registrations' => $registrations,
         'plannedNextWeek' => parking_week_planned($pdo, $nextWeek),
+        'weeklyRegistered' => parking_week_registered($pdo, $nextWeek),
         'allocations' => $allocations,
         'fobLog' => $fobLog,
         'usage' => parking_usage($pdo, (int)$now->format('Y')),
+        'ledger' => parking_ledger($pdo, PARKING_START_YEAR, PARKING_END_YEAR),
+        'startYear' => PARKING_START_YEAR,
+        'endYear' => PARKING_END_YEAR,
         'planMonthUsage' => parking_month_usage($pdo, $nextMonth['year'], $nextMonth['month']),
         'weekMonthUsage' => parking_month_usage($pdo, $weekMonth['year'], $weekMonth['month']),
         'currentYear' => (int)$now->format('Y'),
@@ -273,13 +381,60 @@ function parking_state(PDO $pdo): array {
     ];
 }
 
+// Optional shared access code. Left unset — the default, and how the app has always run —
+// the page is completely open. It exists because a public URL otherwise lets any passer-by
+// book and cancel on the team's behalf, and the app deliberately has no per-person login.
+function parking_access_code(): ?string {
+    $code = getenv('PARKING_ACCESS_CODE');
+    return ($code === false || $code === '') ? null : $code;
+}
+
+$parkingCode = parking_access_code();
+$parkingCodeError = '';
+if ($parkingCode !== null && !(isset($_SESSION['parking_access']) && hash_equals($parkingCode, (string)$_SESSION['parking_access']))) {
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'unlock') {
+        if (hash_equals($parkingCode, (string)($_POST['code'] ?? ''))) {
+            session_regenerate_id(true);
+            $_SESSION['parking_access'] = $parkingCode;
+            header('Location: ' . strtok((string)$_SERVER['REQUEST_URI'], '?'));
+            exit;
+        }
+        usleep(400000); // Slow down guessing without locking anybody out.
+        $parkingCodeError = 'That code is not right.';
+    }
+    // A JSON endpoint must answer in JSON even when the page is locked.
+    if (isset($_POST['action']) && $_POST['action'] !== 'unlock') parking_fail('This page is locked. Reload it and enter the access code.', 403);
+    http_response_code(401);
+    header('Content-Type: text/html; charset=utf-8');
+    echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>101 Parking</title>'
+        . '<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f4f6f5;color:#0e2030;font:16px/1.5 Manrope,system-ui,Arial,sans-serif}'
+        . 'form{background:#fff;padding:2rem;border-radius:20px;box-shadow:0 18px 50px rgba(14,32,48,.09);width:min(22rem,90vw)}'
+        . 'h1{font-size:1.25rem;margin:0 0 .25rem}p{color:#5c6b75;font-size:.875rem;margin:0 0 1.25rem}'
+        . 'input,button{width:100%;font:inherit;padding:.75rem 1rem;border-radius:10px;border:1px solid #dde4e6;box-sizing:border-box}'
+        . 'button{margin-top:.75rem;background:#1669d3;color:#fff;border-color:#1669d3;font-weight:600;cursor:pointer}'
+        . '.err{color:#9e3d0e;font-size:.8125rem;margin:.75rem 0 0}</style></head><body>'
+        . '<form method="post"><input type="hidden" name="action" value="unlock">'
+        . '<h1>101 Parking</h1><p>Enter the team access code to open the weekly fob planner.</p>'
+        . '<input type="password" name="code" autocomplete="current-password" autofocus aria-label="Access code" placeholder="Access code">'
+        . '<button type="submit">Open</button>'
+        . ($parkingCodeError ? '<p class="err">' . htmlspecialchars($parkingCodeError, ENT_QUOTES) . '</p>' : '')
+        . '</form></body></html>';
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    if (!hash_equals(parking_csrf(), (string)($_POST['csrf'] ?? ''))) parking_fail('Invalid request token.', 403);
-    $pdo = parking_db();
     $action = (string)$_POST['action'];
+    // get_state only reads (plus the clock-driven allocation every visitor triggers anyway),
+    // so it stays reachable when a long-open tab outlives its PHP session. Requiring the token
+    // here meant the 60-second poll returned 403 forever once the session was collected, and
+    // the page silently stopped updating.
+    if ($action !== 'get_state' && !hash_equals(parking_csrf(), (string)($_POST['csrf'] ?? ''))) parking_fail('Invalid request token.', 403);
+    $pdo = parking_db();
     try {
         if ($action === 'get_state') {
-            parking_ok(['state' => parking_state($pdo)]);
+            // A fresh token travels with every poll, so a tab whose session was renewed can
+            // still save instead of failing on the token it was rendered with.
+            parking_ok(['state' => parking_state($pdo), 'csrf' => parking_csrf()]);
         }
         if ($action === 'save_plan') {
             $member = (string)($_POST['member'] ?? '');
@@ -288,17 +443,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             parking_member($member);
             $weekDate = DateTimeImmutable::createFromFormat('!Y-m-d', $week, new DateTimeZone('Europe/Luxembourg'));
             if (!$weekDate || $weekDate->format('Y-m-d') !== $week) parking_fail('Invalid week date.');
-            // Accept the old browser bug that sent local Monday as Sunday UTC, then normalize it.
+            // Older browsers serialised a local Monday as the preceding Sunday in UTC, so a
+            // Sunday is shifted forward by one day. Every other weekday is a genuine error:
+            // the old code moved it to the *next* Monday, which quietly booked a week nobody
+            // asked for (a request for Tue 08 Sep saved the week of 14 Sep).
             if ($weekDate->format('N') === '7') {
                 $weekDate = $weekDate->modify('+1 day');
                 $week = $weekDate->format('Y-m-d');
             }
-            // Normalize any client-side date variation to the next Monday instead of blocking the booking.
-            // The browser sends local dates, but older browsers may serialize local Monday as Sunday UTC.
-            if ($weekDate->format('N') !== '1') {
-                $weekDate = $weekDate->modify('next monday');
-                $week = $weekDate->format('Y-m-d');
-            }
+            if ($weekDate->format('N') !== '1') parking_fail('A parking week must start on a Monday.');
             $nextMonth = parking_next_month();
             $allowedWeeks = parking_month_weeks($nextMonth['year'], $nextMonth['month']);
             if (!in_array($week, $allowedWeeks, true)) parking_fail('Only weeks belonging to the next calendar month can be planned.');
@@ -311,9 +464,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 // count against the same quota, so the two routes cannot be combined to get more.
                 $booked = array_diff(parking_member_month_weeks($pdo, $member, $nextMonth['year'], $nextMonth['month']), [$week]);
                 if (count($booked) >= PARKING_MONTHLY_MAX) parking_fail(sprintf('%s has already booked %d weeks in %s, the monthly maximum.', $member, PARKING_MONTHLY_MAX, $nextMonth['value']));
+                // Someone at the annual maximum is skipped by the allocation, so letting them
+                // book would fill a candidate slot and then leave the space unused.
+                if (parking_annual_count($pdo, $member, $week) >= PARKING_ANNUAL_MAX) {
+                    parking_fail(sprintf('%s has already used %d weeks in %s, the annual maximum.', $member, PARKING_ANNUAL_MAX, substr($week, 0, 4)));
+                }
                 // The garage has PARKING_SPACES spaces per week. Without this check every
                 // member could plan the same week and only two of them would ever get a space.
-                $taken = count(parking_week_candidates($pdo, $week));
+                // The member's own weekly registration for that week is not a rival booking.
+                $taken = count(array_diff(parking_week_candidates($pdo, $week), [$member]));
                 if ($taken >= PARKING_SPACES) parking_fail(sprintf('That week is already fully booked: %d of %d spaces are taken. Please choose another week.', $taken, PARKING_SPACES));
                 $insert = $pdo->prepare('INSERT INTO monthly_plans (member_name, week_start) VALUES (?, ?)');
                 $insert->execute([$member, $week]);
@@ -334,6 +493,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $names = array_values(array_unique(array_filter($names, fn($name) => is_string($name) && in_array($name, PARKING_MEMBERS, true))));
             $week = parking_monday(new DateTimeImmutable('now', new DateTimeZone('Europe/Luxembourg')))->format('Y-m-d');
             parking_lock_week($pdo, $week);
+            $existing = parking_week_registered($pdo, $week);
+            // The form submits the whole list, so a page opened before someone else registered
+            // used to delete that registration on save, and anyone could deselect a colleague
+            // and drop them. The client echoes back the list it was showing: if the table has
+            // moved on since, nothing is written and the page refreshes instead.
+            $known = $_POST['known'] ?? null;
+            if ($known !== null) {
+                $known = json_decode((string)$known, true, 20, JSON_THROW_ON_ERROR);
+                if (!is_array($known)) parking_fail('Invalid registration list.');
+                $known = array_values(array_unique(array_filter($known, fn($name) => is_string($name))));
+                sort($known);
+                $seen = $existing;
+                sort($seen);
+                if ($known !== $seen) parking_fail('Someone else changed next week’s registration while this page was open. The list has been refreshed — please check it and save again.', 409);
+            }
             // Members holding the week through a monthly plan already occupy a space. They are
             // not counted twice and cannot be dropped from here; only the rest is open to late sign-ups.
             $held = parking_week_planned($pdo, $week);
@@ -345,29 +519,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     ? sprintf('Only %d of %d spaces are still free next week.%s', $free, PARKING_SPACES, $note)
                     : sprintf('Next week is already fully booked.%s', $note));
             }
-            // The monthly quota covers both routes: a member who already holds
-            // PARKING_MONTHLY_MAX weeks that month cannot add another one here.
+            // Only the names actually being added are validated. Checking every kept name too
+            // would let one member who is somehow over quota block everybody else from saving.
+            $additions = array_values(array_diff($requested, $existing));
             $weekMonth = parking_week_month($week);
-            foreach ($requested as $name) {
+            foreach ($additions as $name) {
+                // The monthly quota covers both routes: a member who already holds
+                // PARKING_MONTHLY_MAX weeks that month cannot add another one here.
                 $booked = array_diff(parking_member_month_weeks($pdo, $name, $weekMonth['year'], $weekMonth['month']), [$week]);
                 if (count($booked) >= PARKING_MONTHLY_MAX) {
                     parking_fail(sprintf('%s has already booked %d weeks in %s, the monthly maximum.', $name, PARKING_MONTHLY_MAX, $weekMonth['value']));
                 }
+                // Someone at the annual maximum is skipped by the allocation, so a booking from
+                // them would occupy a candidate slot and leave the space empty on Monday.
+                if (parking_annual_count($pdo, $name, $week) >= PARKING_ANNUAL_MAX) {
+                    parking_fail(sprintf('%s has already used %d weeks in %s, the annual maximum.', $name, PARKING_ANNUAL_MAX, substr($week, 0, 4)));
+                }
             }
             if ($preview) parking_ok(['preview' => true, 'state' => parking_state($pdo)]);
-            $names = $requested;
+            // A monthly-plan holder who also has a weekly row keeps it: dropping it would throw
+            // away the earlier of their two timestamps, and with it their place in the queue.
+            $target = array_values(array_unique(array_merge($requested, array_intersect($existing, $held))));
             // Weekly changes only affect weekly registrations. Monthly plans remain intact
             // and automatically participate in the same week's allocation.
             $pdo->beginTransaction();
             // Only genuine additions and removals touch the table. Rewriting every row would
             // reset registered_at, and that timestamp is the member's place in the queue.
-            $current = $pdo->prepare('SELECT member_name FROM weekly_registrations WHERE week_start = ?');
-            $current->execute([$week]);
-            $existing = array_column($current->fetchAll(), 'member_name');
             $delete = $pdo->prepare('DELETE FROM weekly_registrations WHERE week_start = ? AND member_name = ?');
-            foreach (array_diff($existing, $names) as $name) $delete->execute([$week, $name]);
+            foreach (array_diff($existing, $target) as $name) $delete->execute([$week, $name]);
             $insert = $pdo->prepare('INSERT INTO weekly_registrations (week_start, member_name) VALUES (?, ?)');
-            foreach (array_diff($names, $existing) as $name) $insert->execute([$week, $name]);
+            foreach (array_diff($target, $existing) as $name) $insert->execute([$week, $name]);
             $pdo->commit();
             parking_ok(['state' => parking_state($pdo)]);
         }
@@ -394,8 +575,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
-$pdo = parking_db();
-$bootstrap = parking_state($pdo);
+try {
+    $pdo = parking_db();
+    $bootstrap = parking_state($pdo);
+} catch (Throwable $e) {
+    // parking_state() writes (the scheduled allocation), so it can fail on a race or an
+    // outage. Without this the page died with an uncaught fatal instead of a readable message.
+    error_log('Parking bootstrap failed: ' . $e->getMessage());
+    http_response_code(503);
+    exit('The parking database is unavailable right now. Please reload in a moment.');
+}
 ?>
 <!doctype html>
 <html lang="en">
@@ -818,7 +1007,7 @@ $bootstrap = parking_state($pdo);
               <div class="planner-cards" id="plannerCards"></div>
               <div class="planner-limit" id="plannerLimit"></div>
               <div class="planner-notice" id="plannerNotice"></div>
-              <div class="planner-foot"><span>Planning is visible to the team; it is not a guaranteed reservation until the weekly allocation is saved.</span><button class="primary" id="savePlanBtn" disabled>Save monthly plan</button></div>
+              <div class="planner-foot"><span>Each week is saved the moment you click it. Planning is visible to the team; it is not a guaranteed reservation until the weekly allocation is saved.</span></div>
             </section>
           </div>
           <div class="admin"><span>Demo controls — useful while testing the flow</span><button id="toggleWindow">Preview open window</button></div>
@@ -867,46 +1056,25 @@ $bootstrap = parking_state($pdo);
 
   <script>
     const SERVER_BOOTSTRAP = <?php echo parking_json($bootstrap); ?>;
-    const SERVER_CSRF = <?php echo parking_json(parking_csrf()); ?>;
+    let SERVER_CSRF = <?php echo parking_json(parking_csrf()); ?>;
     const people = ['Nadia', 'Laurence', 'Lara', 'Jil', 'Erik'];
     const START_YEAR = 2026;
     const END_YEAR = 2030;
     const ANNUAL_MAX = 21;
     const SPACES = SERVER_BOOTSTRAP.spaces || 2;
     const MONTHLY_MAX = SERVER_BOOTSTRAP.monthlyMax || 2;
-    const LOST_FOB_FEE = 100;
     const state = {
       openPreview: false,
       registrations: [],
-      usageByYear: {
-        2026: { Nadia: 12, Laurence: 10, Lara: 11, Jil: 9, Erik: 10 },
-        2027: { Nadia: 0, Laurence: 0, Lara: 0, Jil: 0, Erik: 0 },
-        2028: { Nadia: 0, Laurence: 0, Lara: 0, Jil: 0, Erik: 0 },
-        2029: { Nadia: 0, Laurence: 0, Lara: 0, Jil: 0, Erik: 0 },
-        2030: { Nadia: 0, Laurence: 0, Lara: 0, Jil: 0, Erik: 0 }
-      },
-      awardsByYear: {
-        2026: { Nadia: '07 Aug', Laurence: '31 Jul', Lara: '24 Jul', Jil: '07 Aug', Erik: '31 Jul' },
-        2027: {}, 2028: {}, 2029: {}, 2030: {}
-      },
-      selectedHolidayYear: new Date().getFullYear(),
-      selectedPlannerMonth: '',
+      // Real allocations per year, sent by the server. This was hard-coded demo data
+      // ("Nadia: 12 weeks used, last week 07 Aug") that no query ever replaced, so the
+      // ledger showed invented history to real users.
+      ledger: {},
+      selectedHolidayYear: START_YEAR,
+      currentYear: START_YEAR,
       currentUser: 'Nadia',
-      monthlyPlans: {
-        'Nadia': {}, 'Laurence': {}, 'Lara': {}, 'Jil': {}, 'Erik': {}
-      }
+      monthlyPlans: { 'Nadia': {}, 'Laurence': {}, 'Lara': {}, 'Jil': {}, 'Erik': {} }
     };
-    state.monthlyPlans = SERVER_BOOTSTRAP.monthlyPlans || state.monthlyPlans;
-    state.registrations = SERVER_BOOTSTRAP.registrations || [];
-    state.plannedNextWeek = SERVER_BOOTSTRAP.plannedNextWeek || [];
-    state.allocations = SERVER_BOOTSTRAP.allocations || [];
-    state.fobLog = SERVER_BOOTSTRAP.fobLog || [];
-    // Weeks each member has already booked this month, counted by the server across both
-    // the monthly planner and the weekly registration.
-    state.planMonthUsage = SERVER_BOOTSTRAP.planMonthUsage || {};
-    state.weekMonthUsage = SERVER_BOOTSTRAP.weekMonthUsage || {};
-    state.usageByYear[SERVER_BOOTSTRAP.currentYear] = SERVER_BOOTSTRAP.usage || state.usageByYear[SERVER_BOOTSTRAP.currentYear];
-    state.selectedHolidayYear = SERVER_BOOTSTRAP.currentYear;
 
     async function parkingPost(action, values = {}) {
       const body = new URLSearchParams({ action, csrf: SERVER_CSRF, ...values });
@@ -919,17 +1087,37 @@ $bootstrap = parking_state($pdo);
       if (!serverState) return;
       state.monthlyPlans = serverState.monthlyPlans || state.monthlyPlans;
       state.registrations = serverState.registrations || [];
+      // The candidate list exactly as the server holds it, kept apart from the local
+      // selection the user is editing.
+      state.serverRegistrations = serverState.registrations || [];
+      state.weeklyRegistered = serverState.weeklyRegistered || [];
       state.plannedNextWeek = serverState.plannedNextWeek || [];
       state.allocations = serverState.allocations || [];
       state.fobLog = serverState.fobLog || [];
       state.planMonthUsage = serverState.planMonthUsage || {};
       state.weekMonthUsage = serverState.weekMonthUsage || {};
-      if (serverState.currentYear && serverState.usage) state.usageByYear[serverState.currentYear] = serverState.usage;
-      if (serverState.currentYear) state.selectedHolidayYear = serverState.currentYear;
+      state.planWeeks = serverState.planWeeks || [];
+      state.planWeekUsage = serverState.planWeekUsage || {};
+      state.ledger = serverState.ledger || state.ledger;
+      // Europe/Luxembourg dates, decided by the server. Recomputing them from the browser
+      // clock made a tab in another timezone — or simply one open past midnight — render and
+      // try to book a different week and month than the server accepts.
+      if (serverState.nextWeek) state.nextWeek = serverState.nextWeek;
+      if (serverState.nextMonth) state.nextMonth = serverState.nextMonth;
+      if (serverState.currentYear) {
+        // Follow a year rollover only while the user is still looking at the current year.
+        // The old code reset the calendar dropdown on every 60-second poll, so a chosen year
+        // silently reverted while the select still displayed it.
+        if (state.selectedHolidayYear === state.currentYear) state.selectedHolidayYear = serverState.currentYear;
+        state.currentYear = serverState.currentYear;
+      }
     }
+    applyServerState(SERVER_BOOTSTRAP);
     async function refreshParkingState() {
       try {
         const data = await parkingPost('get_state');
+        // The poll carries a fresh token, so a tab that outlives its PHP session can still save.
+        if (data.csrf) SERVER_CSRF = data.csrf;
         applyServerState(data.state);
         render();
       } catch (error) {
@@ -969,13 +1157,9 @@ $bootstrap = parking_state($pdo);
         { date: new Date(year, 11, 26), name: 'St Stephen’s Day' }
       ].sort((a, b) => a.date - b.date);
     }
-    function nextMonday(date = new Date()) {
-      const d = new Date(date); d.setHours(0,0,0,0);
-      const day = d.getDay();
-      const add = day === 1 ? 7 : (8 - day) % 7 || 7;
-      d.setDate(d.getDate() + add);
-      return d;
-    }
+    function parseDateKey(key) { const [y, m, d] = String(key).split('-').map(Number); return new Date(y, m - 1, d); }
+    // The Monday the server is working towards, in Europe/Luxembourg.
+    function nextMonday() { return parseDateKey(state.nextWeek); }
     function fmt(d, options) { return new Intl.DateTimeFormat('en-GB', options).format(d); }
     function luxembourgDateParts(date = new Date()) {
       const parts = new Intl.DateTimeFormat('en-GB', {
@@ -985,7 +1169,8 @@ $bootstrap = parking_state($pdo);
     }
     function isRegistrationOpen() {
       const now = luxembourgDateParts();
-      if (Number(now.year) < START_YEAR || Number(now.year) > END_YEAR) return false;
+      // No year gate here: the server has none, and one would have shown the window as
+      // permanently closed from 2031 onwards while registrations still went through.
       const minutes = Number(now.hour) * 60 + Number(now.minute);
       return (now.weekdayNumber === 4 && minutes >= 9 * 60) || (now.weekdayNumber === 5 && minutes < 12 * 60);
     }
@@ -1003,9 +1188,6 @@ $bootstrap = parking_state($pdo);
       holidayBox.textContent = holidays.length ? `Holiday in this week: ${holidays.map(item => `${item.name} (${fmt(item.date, { weekday: 'short', day: '2-digit', month: 'short' })})`).join(' · ')}` : '';
       holidayBox.classList.toggle('show', holidays.length > 0);
     }
-    function isWithinSupportedPeriod(date) {
-      return date.getFullYear() >= START_YEAR && date.getFullYear() <= END_YEAR;
-    }
     function renderHolidays() {
       const list = document.getElementById('holidayList');
       const year = Number(state.selectedHolidayYear);
@@ -1019,7 +1201,7 @@ $bootstrap = parking_state($pdo);
     }
     function setupHolidayYears() {
       const select = document.getElementById('holidayYear');
-      const current = Math.min(END_YEAR, Math.max(START_YEAR, new Date().getFullYear()));
+      const current = Math.min(END_YEAR, Math.max(START_YEAR, state.currentYear));
       state.selectedHolidayYear = current;
       select.innerHTML = Array.from({ length: END_YEAR - START_YEAR + 1 }, (_, i) => `<option value="${START_YEAR + i}">${START_YEAR + i}</option>`).join('');
       select.value = String(current);
@@ -1028,15 +1210,17 @@ $bootstrap = parking_state($pdo);
     function renderLedger() {
       const box = document.getElementById('ledger');
       const year = Number(state.selectedHolidayYear);
-      const usage = state.usageByYear[year] || Object.fromEntries(people.map(name => [name, 0]));
-      const awards = state.awardsByYear[year] || {};
+      const entry = state.ledger[year] || {};
+      const usage = entry.usage || {};
+      const lastWeek = entry.lastWeek || {};
       box.innerHTML = people.map(name => {
         const count = usage[name] || 0;
         const pct = Math.min(100, count / ANNUAL_MAX * 100);
+        const last = lastWeek[name] ? fmt(parseDateKey(lastWeek[name]), { day: '2-digit', month: 'short' }) : '—';
         return `<div class="ledger-row">
           <div><div class="ledger-person">${name}</div><div class="quota"><div class="quota-bar" style="width:${pct}%"></div></div></div>
           <div class="ledger-meta">
-            <div class="ledger-cell"><span class="ledger-label">last week</span><span class="ledger-value">${awards[name] || '—'}</span></div>
+            <div class="ledger-cell"><span class="ledger-label">last week</span><span class="ledger-value">${last}</span></div>
             <div class="ledger-cell"><span class="ledger-label">used</span><span class="ledger-value">${count} / ${ANNUAL_MAX}</span></div>
           </div>
         </div>`;
@@ -1070,24 +1254,13 @@ $bootstrap = parking_state($pdo);
       }).join('');
       grid.innerHTML = headers + rows;
     }
-    // Mirrors parking_month_weeks() in PHP: a Monday–Friday week belongs to the month
-    // holding its Wednesday, so a week that straddles two months counts in one of them only.
-    function monthWeeks(year, monthIndex) {
-      const first = new Date(year, monthIndex, 1);
-      const monday = new Date(first);
-      const firstDay = monday.getDay();
-      monday.setDate(first.getDate() - (firstDay === 0 ? 6 : firstDay - 1) - 7);
-      const weeks = [];
-      for (let i = 0, cursor = monday; i < 8; i++, cursor = addDays(cursor, 7)) {
-        const wednesday = addDays(cursor, 2);
-        if (wednesday.getFullYear() === year && wednesday.getMonth() === monthIndex) weeks.push(new Date(cursor));
-      }
-      return weeks;
-    }
+    // The month open for planning and the weeks it contains both come from the server, which
+    // owns the "a week belongs to the month holding its Wednesday" rule. The browser used to
+    // re-implement it against the local clock, so the two could disagree across a timezone
+    // offset or a month boundary and the grid offered weeks the server then rejected.
     function getNextPlanningMonth() {
-      const now = new Date();
-      const next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-      return { year: next.getFullYear(), monthIndex: next.getMonth(), value: `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}` };
+      const [year, month] = String(state.nextMonth.value).split('-').map(Number);
+      return { year, monthIndex: month - 1, value: state.nextMonth.value };
     }
     function setupPlannerUsers() {
       const select = document.getElementById('plannerUser');
@@ -1098,17 +1271,19 @@ $bootstrap = parking_state($pdo);
     function renderPlanner() {
       const grid = document.getElementById('plannerGrid');
       const nextMonth = getNextPlanningMonth();
-      state.selectedPlannerMonth = nextMonth.value;
-      const weeks = monthWeeks(nextMonth.year, nextMonth.monthIndex);
+      const weeks = (state.planWeeks || []).map(parseDateKey);
       const active = state.currentUser;
       const activePlans = state.monthlyPlans[active] || {};
       const monthlyLimit = MONTHLY_MAX;
       // Counted by the server, so a week taken through the weekly registration also
       // fills part of the monthly quota.
       const activePlanCount = (state.planMonthUsage || {})[active] ?? Object.keys(activePlans).length;
-      // How many of the week's spaces are already claimed, across every member.
-      const takenPerWeek = {};
-      people.forEach(name => Object.keys(state.monthlyPlans[name] || {}).forEach(week => { takenPerWeek[week] = (takenPerWeek[week] || 0) + 1; }));
+      // Occupancy across both booking routes, counted by the server. Counting monthly plans
+      // alone showed a free space on weeks the weekly registration had already filled.
+      const takenPerWeek = state.planWeekUsage || {};
+      // Someone at the annual maximum is skipped by the allocation, so the server refuses
+      // the booking; grey the week out rather than letting the click fail.
+      const atAnnualCap = year => (((state.ledger[year] || {}).usage || {})[active] || 0) >= ANNUAL_MAX;
       const monthLabel = fmt(new Date(nextMonth.year, nextMonth.monthIndex, 1), { month: 'long', year: 'numeric' });
       document.querySelector('.month-planner-caption').textContent = `Only ${monthLabel} is open for planning. Every week has ${SPACES} spaces handed out first come, first served; once both are taken the week closes. Select a name to add weeks; any colleague may cancel an existing plan.`;
       document.getElementById('plannerLimit').innerHTML = `<strong>${active}:</strong> ${monthlyLimit} week${monthlyLimit === 1 ? '' : 's'} per person in ${monthLabel} — the same quota for everyone, and weeks taken through the Thursday–Friday registration count towards it. ${activePlanCount} of ${monthlyLimit} used.`;
@@ -1125,7 +1300,7 @@ $bootstrap = parking_state($pdo);
           const holiday = luxembourgHolidays(week.getFullYear()).some(item => item.date >= week && item.date <= addDays(week, 4));
           const planned = Boolean(plans[key]);
           const canChange = planned || isActive;
-          const limitReached = !planned && isActive && activePlanCount >= monthlyLimit;
+          const limitReached = !planned && isActive && (activePlanCount >= monthlyLimit || atAnnualCap(week.getFullYear()));
           const weekFull = !planned && (takenPerWeek[key] || 0) >= SPACES;
           const disabled = !canChange || limitReached || weekFull;
           const label = planned ? 'Cancel' : weekFull ? 'Full' : limitReached ? 'Limit' : holiday ? 'Holiday' : 'Plan';
@@ -1144,7 +1319,7 @@ $bootstrap = parking_state($pdo);
         const holders = people.filter(name => (state.monthlyPlans[name] || {})[key]);
         const holiday = luxembourgHolidays(week.getFullYear()).some(item => item.date >= week && item.date <= addDays(week, 4));
         const planned = holders.includes(active);
-        const limitReached = !planned && activePlanCount >= monthlyLimit;
+        const limitReached = !planned && (activePlanCount >= monthlyLimit || atAnnualCap(week.getFullYear()));
         const weekFull = !planned && taken >= SPACES;
         const label = planned ? `Cancel ${active}’s plan` : weekFull ? 'Week full' : limitReached ? `${active} has reached the monthly limit` : `Plan this week as ${active}`;
         const range = `${fmt(week, { day: '2-digit', month: 'short' })} – ${fmt(addDays(week, 4), { day: '2-digit', month: 'short' })}`;
@@ -1170,7 +1345,6 @@ $bootstrap = parking_state($pdo);
           .then(data => { applyServerState(data.state); render(); })
           .catch(error => { const notice = document.getElementById('plannerNotice'); notice.textContent = error.message; notice.classList.add('show'); setTimeout(() => notice.classList.remove('show'), 4500); });
       }));
-      document.getElementById('savePlanBtn').disabled = Object.keys(activePlans).length === 0;
     }
     function renderPeople() {
       const open = state.currentOpen;
@@ -1179,8 +1353,9 @@ $bootstrap = parking_state($pdo);
       const full = state.registrations.length >= SPACES;
       box.innerHTML = people.map(name => {
         const selected = state.registrations.includes(name);
-        const year = Number(state.selectedHolidayYear);
-        const usage = state.usageByYear[year] || {};
+        // Always the server's current year. Reading the calendar dropdown meant that picking
+        // 2029 in the holiday list changed who counted as being at the annual cap here.
+        const usage = (state.ledger[state.currentYear] || {}).usage || {};
         const count = usage[name] || 0;
         const atCap = count >= ANNUAL_MAX;
         // A monthly plan already holds the space, and the last free space cannot be over-subscribed.
@@ -1188,7 +1363,10 @@ $bootstrap = parking_state($pdo);
         const noSpaceLeft = !selected && full;
         // The two weeks a month are shared with the planner, so someone who already
         // booked both cannot pick up next week here either.
-        const monthUsed = (state.weekMonthUsage || {})[name] || 0;
+        // weekMonthUsage already counts next week for anyone the server has registered. Without
+        // discounting that, unticking such a name immediately disabled the button and locked
+        // them out of re-ticking it until the next refresh.
+        const monthUsed = ((state.weekMonthUsage || {})[name] || 0) - ((state.serverRegistrations || []).includes(name) ? 1 : 0);
         const atMonthCap = !selected && !planLocked && monthUsed >= MONTHLY_MAX;
         const disabled = !open || atCap || planLocked || noSpaceLeft || atMonthCap;
         const note = planLocked ? ' · planned' : atCap ? ' · cap' : atMonthCap ? ` · ${MONTHLY_MAX} this month` : noSpaceLeft ? ' · week full' : '';
@@ -1221,25 +1399,31 @@ $bootstrap = parking_state($pdo);
       renderPeople(); renderLedger(); renderHolidays(); renderSavedCalendar(); renderPlanner(); setWeek();
     }
     document.getElementById('toggleWindow').addEventListener('click', () => { state.openPreview = !state.openPreview; render(); });
-    document.getElementById('savePlanBtn').addEventListener('click', () => {
-      const planned = Object.keys(state.monthlyPlans[state.currentUser] || {}).length;
-      const notice = document.getElementById('plannerNotice');
-      notice.textContent = `${state.currentUser}’s monthly plan is saved for ${planned} week${planned === 1 ? '' : 's'}. Weekly allocation will still be confirmed during the normal registration window.`;
-      notice.classList.add('show');
-      setTimeout(() => notice.classList.remove('show'), 4500);
-    });
     document.getElementById('registerBtn').addEventListener('click', async () => {
       const notice = document.getElementById('notice');
       try {
         const chosen = state.registrations.join(' · ');
         // Only a genuinely closed window is a dry run; inside the real window this always saves.
-        const data = await parkingPost('save_weekly_registration', { names: JSON.stringify(state.registrations), preview: (state.openPreview && !isRegistrationOpen()) ? '1' : '0' });
+        // "known" is the registration list this page rendered from. The server refuses the
+        // write if the table has moved on since, so a stale tab can no longer delete a
+        // registration somebody else made in the meantime.
+        const data = await parkingPost('save_weekly_registration', {
+          names: JSON.stringify(state.registrations),
+          known: JSON.stringify(state.weeklyRegistered || []),
+          preview: (state.openPreview && !isRegistrationOpen()) ? '1' : '0'
+        });
         applyServerState(data.state);
         notice.textContent = data.preview
           ? `Preview only — nothing was saved. ${chosen} would fit the ${SPACES} spaces. Real registration opens Thursday 09:00.`
           : `Saved: ${chosen} registered for next week.`;
         notice.classList.add('show'); render();
-      } catch (error) { notice.textContent = error.message; notice.classList.add('show'); }
+      } catch (error) {
+        // A refused save usually means the shared list moved on, so show the reason against
+        // the freshly loaded list rather than against the stale one on screen.
+        await refreshParkingState();
+        notice.textContent = error.message;
+        notice.classList.add('show');
+      }
       setTimeout(() => notice.classList.remove('show'), 4200);
     });
     setupHolidayYears();

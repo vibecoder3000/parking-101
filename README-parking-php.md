@@ -5,6 +5,7 @@
 - `parking.php` — the page and PHP JSON endpoints.
 - `schema.sql` — database and table setup.
 - `config.example.php` — copy to `config.php` and enter the MySQL credentials.
+- `Dockerfile` / `render.yaml` — hosted deployment (see *Deploying*).
 
 ## Setup
 
@@ -15,6 +16,41 @@
 5. Upload `parking.php`, `config.php`, and the schema-related files to PHP hosting.
 6. Ensure PHP has the `PDO_MySQL` extension enabled.
 7. Keep `config.php` outside public access if the host supports it. Otherwise, deny direct access to it with the host’s rules.
+
+Instead of `config.php`, the same settings can come from the environment, which is what a
+hosted deploy uses: `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`,
+`MYSQL_PASSWORD`, `MYSQL_SSL_CA`, `MYSQL_SSL_VERIFY`. Anything set there overrides
+`config.php`, so no credential has to live in the repository, and `config.php` is in
+`.gitignore`.
+
+`MYSQL_SSL_CA` accepts a path to a CA file, the word `system` for the machine's own CA
+bundle, or the certificate text itself — a PaaS dashboard has nowhere to put a file.
+
+## Deploying to Render
+
+Render's free tier has no MySQL, so the database comes from a provider that does
+(Aiven, TiDB Cloud and Clever Cloud all offer a free MySQL) and Render runs only the app.
+
+1. Create the free MySQL and note its host, port, database, user and password.
+2. Import `schema.sql` into it.
+3. In Render: **New → Web Service**, connect this repository, choose the **Docker** runtime
+   and the **Free** plan. `render.yaml` describes the service if you use a Blueprint instead.
+4. Set `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER` and `MYSQL_PASSWORD` in the
+   service's environment, plus `MYSQL_SSL_CA=system` (hosted MySQL requires TLS). If the
+   provider's certificate does not validate, paste its `ca.pem` contents into `MYSQL_SSL_CA`,
+   or set `MYSQL_SSL_VERIFY=false` as a last resort.
+5. Deploy. The image serves `parking.php` as the site root on the port Render assigns.
+
+Two things worth knowing about the free plan: the service sleeps after inactivity, so the
+first request after a quiet spell takes a few seconds, and there is no persistent disk —
+which does not matter here, because all state lives in the external database.
+
+### Access code
+
+The app has no per-person login by design, so on a public URL any visitor could book and
+cancel for the team. Set `PARKING_ACCESS_CODE` to a shared code and the page asks for it
+once per browser session before anything is reachable, including the JSON endpoints. Leave
+the variable unset and the page behaves exactly as it always has, completely open.
 
 ## Stored data
 
@@ -55,3 +91,24 @@ The PHP file uses Europe/Luxembourg time for registration timing and generates t
 - The page refreshes its database state every 60 seconds and when the browser tab becomes active again.
 - At a new week or month, the server calculates the new dates automatically. No weekly database reset or manual maintenance is required.
 - Server-side rules remain authoritative even if a browser stays open across the cutoff. The “Preview open window” demo button is a dry run: it validates and reports the outcome without writing, so it cannot register anyone outside the Thursday–Friday window.
+
+## Notes for the next person
+
+Some things in here are deliberate, and some are simply not finished.
+
+- **No login.** Anyone who can open the page can book or cancel as any of the five names.
+  That is the original design; `PARKING_ACCESS_CODE` gates the page as a whole, not the
+  individual names. The `fob_update` endpoint is unauthenticated in the same way and accepts
+  any Monday and any slot.
+- **The fob log is dead weight.** `fob_log`, the `fob_update` endpoint and the `lostFobFee`
+  value in the state are all wired up server-side, but nothing in the page ever reads or
+  writes them. The €100 fee shown on the page is fixed text.
+- **`parking_holidays()` is unused.** The holiday list is generated in the browser. The PHP
+  version needs `ext-calendar` for `easter_date()`, which is why nothing calls it.
+- **The two-space capacity spans two tables**, so no unique key can enforce it. Both booking
+  routes take a MySQL named lock on the week instead, and the automatic allocation takes a
+  second, separate lock so two page loads cannot both fill slot 1. `GET_LOCK` needs MySQL
+  5.7 or newer for the nested case to behave.
+- **The browser no longer computes dates.** Which week is next and which month is open both
+  come from the server, in Europe/Luxembourg. Only the clock and the holiday list still use
+  the browser's clock, and both convert through `Intl` with an explicit time zone.
