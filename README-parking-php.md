@@ -1,5 +1,11 @@
 # Parking PHP/MySQL version
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/vibecoder3000/parking-101)
+
+The button reads `render.yaml` and creates the free web service. It will ask for the database
+credentials and the access code — have the MySQL from *Deploying to Render* below ready first,
+or the first deploy will start and then fail its connection.
+
 ## Files
 
 - `parking.php` — the page and PHP JSON endpoints.
