@@ -1,0 +1,16 @@
+{
+  "name": "101 Parking",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/parking-101",
+  // Keep the image's own command (apache2-foreground) instead of the usual sleep,
+  // so the site is already serving when the Codespace finishes starting.
+  "overrideCommand": false,
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": {
+      "label": "101 Parking",
+      "onAutoForward": "openPreview"
+    }
+  }
+}

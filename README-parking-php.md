@@ -32,6 +32,43 @@ hosted deploy uses: `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`,
 `MYSQL_SSL_CA` accepts a path to a CA file, the word `system` for the machine's own CA
 bundle, or the certificate text itself — a PaaS dashboard has nowhere to put a file.
 
+## A link from GitHub itself (Codespaces)
+
+GitHub Pages cannot host this — it serves static files, and this needs PHP and a database.
+Codespaces can: it runs the app and the MySQL together in a container and forwards a port
+you can make public. No Render account and no external database.
+
+1. On the repository: **Code → Codespaces → Create codespace on main**.
+2. Wait for the build. `.devcontainer/docker-compose.yml` starts PHP/Apache from the
+   `Dockerfile` and a MySQL beside it, and imports `schema.sql` automatically the first time.
+3. Open the **Ports** tab, right-click port 8080 → **Port Visibility → Public**.
+4. Copy the forwarded address (`https://<codespace>-8080.app.github.dev`). That is the link
+   to share.
+
+What this is and is not:
+
+- The link works only while the codespace is running. It stops itself after 30 minutes idle
+  and the link goes dead until you start it again.
+- It runs against GitHub's free Codespaces allowance for personal accounts — check the hours
+  on your billing page before leaving it up.
+- Bookings live in the codespace's volume. Deleting the codespace deletes them.
+- A public forwarded port is reachable by anyone holding the link. Set `PARKING_ACCESS_CODE`
+  (a Codespaces secret, or in `docker-compose.yml`) before sharing it.
+
+Good for showing the team and agreeing the rules. Use Render below for the real thing.
+
+## Running the whole stack locally
+
+The same compose file works on a laptop with Docker, no PHP or MySQL installed:
+
+```bash
+docker compose -f .devcontainer/docker-compose.yml up --build
+```
+
+Then open <http://localhost:8080>. `APP_PORT=8896 docker compose ...` moves it if something
+already has 8080. `docker compose -f .devcontainer/docker-compose.yml down -v` throws the
+database away and starts clean next time.
+
 ## Deploying to Render
 
 Render's free tier has no MySQL, so the database comes from a provider that does

@@ -1,0 +1,50 @@
+# The whole app in one command: PHP/Apache from the repo Dockerfile plus a MySQL beside it.
+# Used by Codespaces, and equally by `docker compose -f .devcontainer/docker-compose.yml up`
+# on a laptop.
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      PORT: "8080"
+      MYSQL_HOST: db
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: parking_101
+      MYSQL_USER: parking_app
+      MYSQL_PASSWORD: parking_app
+      # No TLS: the database is on the private compose network, not the internet.
+      MYSQL_SSL_CA: ""
+      # Set a value here (or in Codespaces secrets) to put the page behind a shared code.
+      PARKING_ACCESS_CODE: "${PARKING_ACCESS_CODE:-}"
+    ports:
+      # Codespaces forwards 8080. APP_PORT only changes the host side, for a laptop that
+      # already has something on 8080.
+      - "${APP_PORT:-8080}:8080"
+    volumes:
+      # Edits to parking.php show up on reload, without rebuilding the image.
+      - ../parking.php:/var/www/html/index.php:ro
+      - ..:/workspaces/parking-101:cached
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: parking_101
+      MYSQL_USER: parking_app
+      MYSQL_PASSWORD: parking_app
+    volumes:
+      # MySQL runs everything in this directory once, on an empty data volume.
+      - ../schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - parking-db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-proot", "--silent"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  parking-db:
