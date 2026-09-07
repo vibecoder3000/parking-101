@@ -64,6 +64,15 @@ function parking_db(): PDO {
     if ($ca) $options[PDO::MYSQL_ATTR_SSL_CA] = $ca;
     if (!$config['ssl_verify']) $options[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = false;
     $pdo = new PDO($dsn, $config['user'], (string)$config['password'], $options);
+    // PHP runs on Europe/Luxembourg while MySQL defaults to the server clock, usually UTC.
+    // That split put two time bases in one row: fob_log.returned_at is written by PHP and
+    // updated_at by MySQL, so the same event was recorded two hours apart. Pinning the
+    // session to PHP's current offset makes CURRENT_TIMESTAMP agree with date(). A numeric
+    // offset is used rather than a zone name because the named-zone tables are frequently
+    // not loaded on shared hosting. TIMESTAMP columns keep storing UTC internally, so
+    // existing rows are unaffected — they simply read back in the zone they happened in.
+    $offset = (new DateTimeImmutable('now', new DateTimeZone('Europe/Luxembourg')))->format('P');
+    $pdo->prepare('SET time_zone = ?')->execute([$offset]);
     return $pdo;
 }
 

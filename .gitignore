@@ -3,3 +3,8 @@ config.php
 .DS_Store
 _tmp_*
 _shots/
+_reset_demo.sh
+_dbtest.py
+_race.py
+_alloctest.sh
+_faketime.Dockerfile
