@@ -592,6 +592,7 @@ try {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>101 Parking — Weekly fob registration</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23ff7a36'/><text x='16' y='22' font-family='Helvetica,Arial,sans-serif' font-size='15' font-weight='bold' fill='white' text-anchor='middle'>101</text></svg>">
   <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
     :root {
@@ -667,6 +668,7 @@ try {
     }
     .brand-name { display: block; font-size: var(--fs-base); font-weight: 800; letter-spacing: -.025em; }
     .brand-sub { display: block; color: #93a4ae; font-size: var(--fs-xs); }
+    .topbar-right { flex: none; display: flex; align-items: center; gap: var(--s4); }
     .clock { flex: none; color: #c3cfd6; font-size: var(--fs-xs); text-align: right; }
 
     main { width: min(1180px, calc(100% - 2.5rem)); margin: 0 auto; padding: var(--s7) 0 var(--s7); }
@@ -676,13 +678,9 @@ try {
     h1 { font-size: clamp(2.25rem, 6.5vw, 3.9rem); letter-spacing: -.055em; line-height: 1; margin: var(--s3) 0 var(--s4); max-width: 16ch; }
     h1 em { font-style: italic; color: var(--blue); }
     .lede { color: var(--muted); max-width: 62ch; margin: 0; font-size: var(--fs-md); line-height: 1.55; }
-    .hero { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--s6); margin-bottom: var(--s6); }
-    .hero-note { flex: none; width: 230px; padding: var(--s4); border: 1px solid var(--line); background: rgba(255,255,255,.62); border-radius: var(--radius-md); }
-    .hero-note strong { display: block; font-size: var(--fs-xl); letter-spacing: -.04em; }
-    .hero-note span { display: block; margin-top: var(--s1); color: var(--muted); font-size: var(--fs-xs); line-height: 1.45; }
 
     /* ── Panels ──────────────────────────────────────────── */
-    .grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, .88fr); gap: var(--s5); align-items: start; }
+    .grid { display: grid; grid-template-columns: minmax(0, .92fr) minmax(0, 1.22fr); gap: var(--s5); align-items: start; }
     .panel { background: var(--white); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
     .panel-head { display: flex; justify-content: space-between; align-items: center; gap: var(--s4); border-bottom: 1px solid var(--line); padding: var(--s5) var(--pad); }
     .panel-title { margin: 0; font-size: var(--fs-lg); letter-spacing: -.035em; }
@@ -730,18 +728,6 @@ try {
     .rule span { display: block; margin-top: 2px; color: var(--muted); font-size: var(--fs-xs); }
 
     /* ── Saved allocation grid ───────────────────────────── */
-    .saved-calendar { border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; background: white; }
-    .calendar-scroll { overflow-x: auto; }
-    .saved-grid { min-width: 560px; display: grid; grid-template-columns: 150px repeat(5, 1fr); }
-    .saved-grid > div { min-height: 62px; padding: var(--s3); border-right: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); display: flex; flex-direction: column; justify-content: center; }
-    .saved-grid > div:nth-child(6n) { border-right: 0; }
-    .saved-grid > div:nth-last-child(-n+5) { border-bottom: 0; }
-    .saved-grid .day-head { min-height: 48px; background: var(--wash); color: var(--muted); font-family: 'DM Mono', monospace; font-size: var(--fs-micro); letter-spacing: .08em; text-transform: uppercase; }
-    .saved-grid .corner { color: var(--ink); font-weight: 500; }
-    .space-label { font-family: 'DM Mono', monospace; color: var(--faint); font-size: var(--fs-micro); letter-spacing: .1em; text-transform: uppercase; }
-    .space-week { display: none; margin-top: 2px; color: var(--muted); font-size: var(--fs-xs); }
-    .saved-name { display: block; margin-top: var(--s1); font-size: var(--fs-base); font-weight: 800; letter-spacing: -.03em; }
-    .saved-empty { color: var(--faint); font-size: var(--fs-sm); font-weight: 600; }
     .saved-calendar-foot { display: flex; justify-content: space-between; gap: var(--s3); padding: var(--s3) var(--s4); color: var(--muted); font-size: var(--fs-xs); background: var(--wash); border-top: 1px solid var(--line-soft); }
     .waitlist { color: var(--orange-ink); font-weight: 700; }
 
@@ -783,10 +769,13 @@ try {
     .calendar-controls select { border: 1px solid var(--line); border-radius: var(--radius-sm); min-height: var(--tap); padding: var(--s2) var(--s3); background: white; color: var(--ink); font-size: var(--fs-base); font-weight: 700; }
     .planner-shell { border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; background: white; }
     .planner-scroll { overflow-x: auto; }
-    .planner-grid { min-width: 596px; display: grid; grid-template-columns: 116px repeat(5, 1fr); }
+    /* Column count comes from renderPlanner(): a month has four or five weeks, and the
+       template used to be pinned at five, so every four-week month sheared diagonally. */
+    .planner-grid { display: grid; }
     .planner-grid > div { min-height: 60px; padding: var(--s2); border-right: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); display: flex; align-items: center; }
-    .planner-grid > div:nth-child(6n) { border-right: 0; }
-    .planner-grid > div:nth-last-child(-n+5) { border-bottom: 0; }
+    .planner-grid > div.row-end { border-right: 0; }
+    .plan-idle { width: 100%; text-align: center; color: var(--faint); font-family: 'DM Mono', monospace; font-size: var(--fs-xs); }
+    .planner-grid > div.last-row { border-bottom: 0; }
     .planner-grid .planner-head-cell { min-height: 64px; background: var(--wash); color: var(--muted); font-family: 'DM Mono', monospace; font-size: var(--fs-micro); letter-spacing: .06em; text-transform: uppercase; flex-direction: column; justify-content: center; align-items: flex-start; gap: 2px; line-height: 1.35; }
     .planner-grid .planner-corner { color: var(--ink); font-weight: 500; }
     .planner-head-seats { display: inline-block; padding: 1px var(--s2); border-radius: 99px; background: var(--mint); color: var(--mint-ink); font-size: var(--fs-micro); font-weight: 500; }
@@ -821,8 +810,9 @@ try {
 
     /* ── Side panels ─────────────────────────────────────── */
     .side-stack { display: grid; gap: var(--s5); }
+    .stack { display: grid; gap: var(--s5); align-content: start; min-width: 0; }
     .ledger-list { padding: var(--s2) var(--pad) var(--s4); }
-    .ledger-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s2) var(--s4); align-items: center; padding: var(--s4) 0; border-bottom: 1px solid var(--line-soft); }
+    .ledger-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s2) var(--s4); align-items: center; padding: var(--s3) 0; border-bottom: 1px solid var(--line-soft); }
     .ledger-row:last-child { border-bottom: 0; }
     .ledger-person { font-size: var(--fs-base); font-weight: 800; letter-spacing: -.02em; }
     .ledger-meta { display: flex; gap: var(--s4); justify-content: flex-end; }
@@ -837,6 +827,26 @@ try {
     .step-num { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: var(--orange-soft); color: var(--orange-ink); font-family: 'DM Mono', monospace; font-size: var(--fs-xs); font-weight: 500; }
     .step b { font-size: var(--fs-base); letter-spacing: -.02em; }
     .step p { margin: 2px 0 0; font-size: var(--fs-xs); color: var(--muted); }
+
+    /* ── The two primary views ───────────────────────────── */
+    .week-body, .month-body { padding: var(--s5) var(--pad) var(--pad); }
+    .fob-state { margin-top: var(--s2); font-family: 'DM Mono', monospace; font-size: var(--fs-micro); letter-spacing: .1em; text-transform: uppercase; color: rgba(255,255,255,.6); }
+    .fob.is-provisional .fob-state { color: #ffd2b8; }
+    .week-foot { margin: var(--s3) 0 var(--s5); display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); color: var(--muted); font-size: var(--fs-xs); }
+    .week-foot .waitlist { color: var(--orange-ink); font-weight: 600; }
+
+    /* ── Reference: the explanations, folded away until asked for ── */
+    .reference { margin-top: var(--s5); display: grid; gap: var(--s3); }
+    .ref { background: var(--white); border: 1px solid var(--line); border-radius: var(--radius-md); box-shadow: var(--shadow-sm); overflow: hidden; }
+    .ref > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: var(--s3); min-height: var(--tap); padding: var(--s3) var(--pad); font-weight: 700; font-size: var(--fs-base); }
+    .ref > summary::-webkit-details-marker { display: none; }
+    .ref > summary::after { content: '+'; margin-left: auto; font-family: 'DM Mono', monospace; font-size: var(--fs-lg); color: var(--muted); line-height: 1; }
+    .ref[open] > summary::after { content: '–'; }
+    .ref > summary:hover { background: var(--wash); }
+    .ref > summary:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+    .ref-note { font-weight: 400; color: var(--muted); font-size: var(--fs-xs); }
+    .ref-body { border-top: 1px solid var(--line); }
+    .ref-body .panel-head { border-bottom: 0; padding-bottom: 0; }
 
     /* ── Calendar + etiquette ────────────────────────────── */
     .calendar-panel { margin-top: var(--s5); }
@@ -906,6 +916,9 @@ try {
       h1 { max-width: none; }
       .brand-sub { display: none; }
       .clock-zone { display: none; }
+      .brand-name { white-space: nowrap; }
+      /* The open/closed state is worth more here than the date, and there is room for one. */
+      .topbar-right .clock { display: none; }
       .fobs, .rules { grid-template-columns: 1fr; }
       .fob { min-height: 0; }
       .fob-person { margin-top: var(--s4); }
@@ -932,124 +945,107 @@ try {
         <div class="brand-mark">101</div>
         <div><span class="brand-name">Parking / weekly fobs</span><span class="brand-sub">Gonderange</span></div>
       </div>
-      <div class="clock" id="clock">Loading local time…</div>
+      <div class="topbar-right">
+        <span class="status status-closed" id="windowStatus"><i class="status-dot"></i><span>Registration closed</span></span>
+        <div class="clock" id="clock">Loading local time…</div>
+      </div>
     </header>
 
     <main>
-      <section class="hero">
-        <div>
-          <div class="eyebrow">Shared resource / 02 spaces / 05 people</div>
-          <h1>One week. One fob.<br><em>First come, first served.</em></h1>
-          <p class="lede">Every person can book two weeks a month. Claim a week in the monthly planner, or register for the following Monday–Friday week before Friday noon. The two spaces go to whoever booked the week first.</p>
-        </div>
-        <div class="hero-note"><strong>2 / month</strong><span>weeks per person, on both spaces, allocated in booking order and capped at 21 weeks a year.</span></div>
-      </section>
-
       <div class="grid">
-        <section class="panel">
+
+        <!-- ── Primary view 1: the week being allocated ────────────────── -->
+        <section class="panel view-week" aria-live="polite">
           <div class="panel-head">
-            <div><h2 class="panel-title">Next allocation</h2><p class="panel-caption">The fobs change hands every Friday afternoon.</p></div>
-            <span class="status status-closed" id="windowStatus"><i class="status-dot"></i><span>Registration closed</span></span>
+            <div><h2 class="panel-title">Next week</h2><p class="panel-caption">The fobs change hands every Friday afternoon.</p></div>
+            <span class="status status-closed mono" id="savedCalendarStatus">0 / 2 saved</span>
           </div>
-          <div class="week-strip">
-            <div class="week-date"><h2 id="weekLabel">17–21 Aug</h2><span id="weekYear">2026</span></div>
+          <div class="week-body">
+            <div class="week-date"><h2 id="weekLabel">—</h2><span id="weekYear"></span></div>
             <div class="week-holiday" id="weekHoliday"></div>
             <div class="fobs">
-              <div class="fob"><div class="fob-tag">FOB A / SPACE 01</div><div class="fob-person" id="fobA">Unallocated</div></div>
-              <div class="fob"><div class="fob-tag">FOB B / SPACE 02</div><div class="fob-person" id="fobB">Unallocated</div></div>
+              <div class="fob"><div class="fob-tag">Space 01 / Fob A</div><div><div class="fob-person" id="fobA">Not allocated yet</div><div class="fob-state" id="fobAState"></div></div></div>
+              <div class="fob"><div class="fob-tag">Space 02 / Fob B</div><div><div class="fob-person" id="fobB">Not allocated yet</div><div class="fob-state" id="fobBState"></div></div></div>
             </div>
-            <div class="rules">
-              <div class="rule"><b>Opens Thursday 09:00</b><span>For the following Monday.</span></div>
-              <div class="rule"><b>Closes Friday 12:00</b><span>Allocation is then locked.</span></div>
+            <p class="week-foot"><span id="savedCalendarCaption"></span><span class="waitlist" id="waitlistText"></span></p>
+
+            <div class="register" id="registerBox">
+              <div class="register-top">
+                <div><h3>Who needs a space next week?</h3></div>
+                <span class="count-pill mono" id="registrationCount">0 / 2</span>
+              </div>
+              <p id="registerHelp"></p>
+              <div class="people" id="people"></div>
+              <div class="register-foot"><span class="fine">You can opt out at any time before the deadline.</span><button class="primary" id="registerBtn" disabled>Save registration</button></div>
+              <div class="notice" id="notice"></div>
             </div>
-
-            <section class="sec" aria-live="polite">
-              <div class="sec-head">
-                <div>
-                  <span class="sec-eyebrow">Confirmed</span>
-                  <h3 class="sec-title">Saved spaces this week</h3>
-                  <p class="sec-caption" id="savedCalendarCaption">The allocation appears here once registrations are saved.</p>
-                </div>
-                <div class="sec-aside"><span class="status status-closed mono" id="savedCalendarStatus">NOT YET SAVED</span></div>
-              </div>
-              <div class="saved-calendar">
-                <div class="calendar-scroll"><div class="saved-grid" id="savedCalendarGrid"></div></div>
-                <div class="saved-calendar-foot"><span>Each saved name holds the space for the full Monday–Friday week.</span><span class="waitlist" id="waitlistText"></span></div>
-              </div>
-            </section>
-
-            <section class="sec">
-              <div class="register" id="registerBox">
-                <div class="register-top">
-                  <div>
-                    <span class="sec-eyebrow">Act now · Thursday 09:00 – Friday 12:00</span>
-                    <h3>Who needs a space next week?</h3>
-                  </div>
-                  <span class="count-pill mono" id="registrationCount">0 / 2</span>
-                </div>
-                <p id="registerHelp">Registration is currently closed. It opens automatically during the Thursday–Friday window.</p>
-                <div class="people" id="people"></div>
-                <div class="register-foot"><span class="fine">You can opt out at any time before the deadline.</span><button class="primary" id="registerBtn" disabled>Save registration</button></div>
-                <div class="notice" id="notice">Registration saved for the next allocation.</div>
-              </div>
-            </section>
-
-            <section class="sec" aria-live="polite">
-              <div class="sec-head">
-                <div>
-                  <span class="sec-eyebrow">Plan ahead</span>
-                  <h3 class="sec-title">Plan next month</h3>
-                  <p class="sec-caption month-planner-caption">Only the next calendar month is open for planning. Select a name to add weeks; any colleague may cancel an existing plan.</p>
-                </div>
-                <div class="sec-aside month-planner-controls"><label class="mono sec-eyebrow" for="plannerUser">Book as</label><select id="plannerUser" aria-label="Select the person booking parking"></select></div>
-              </div>
-              <div class="planner-shell"><div class="planner-scroll"><div class="planner-grid" id="plannerGrid"></div></div></div>
-              <div class="planner-cards" id="plannerCards"></div>
-              <div class="planner-limit" id="plannerLimit"></div>
-              <div class="planner-notice" id="plannerNotice"></div>
-              <div class="planner-foot"><span>Each week is saved the moment you click it. Planning is visible to the team; it is not a guaranteed reservation until the weekly allocation is saved.</span></div>
-            </section>
           </div>
-          <div class="admin"><span>Demo controls — useful while testing the flow</span><button id="toggleWindow">Preview open window</button></div>
         </section>
 
-        <aside class="side-stack">
-          <section class="panel">
-            <div class="panel-head"><div><h2 class="panel-title" id="ledgerTitle">2026 usage ledger</h2><p class="panel-caption">2 weeks per person per month, in booking order.</p></div><span class="panel-tag mono">max 21</span></div>
+        <!-- ── Primary view 2: the month being planned ─────────────────── -->
+        <div class="stack">
+          <section class="panel view-month" aria-live="polite">
+          <div class="panel-head">
+            <div><h2 class="panel-title">Plan next month</h2><p class="panel-caption month-planner-caption"></p></div>
+            <div class="sec-aside month-planner-controls"><label class="mono sec-eyebrow" for="plannerUser">Book as</label><select id="plannerUser" aria-label="Select the person booking parking"></select></div>
+          </div>
+          <div class="month-body">
+            <div class="planner-shell"><div class="planner-scroll"><div class="planner-grid" id="plannerGrid"></div></div></div>
+            <div class="planner-cards" id="plannerCards"></div>
+            <div class="planner-limit" id="plannerLimit"></div>
+            <div class="planner-notice" id="plannerNotice"></div>
+          </div>
+          </section>
+          <!-- Secondary, but it belongs beside the planner: the quota it reports is the
+               thing the planner is spending. -->
+          <section class="panel ledger-panel">
+            <div class="panel-head"><div><h2 class="panel-title" id="ledgerTitle">2026 usage</h2><p class="panel-caption">Weeks actually allocated, per person.</p></div><span class="panel-tag mono">max 21</span></div>
             <div class="ledger-list" id="ledger"></div>
           </section>
-          <section class="panel">
-            <div class="panel-head"><div><h2 class="panel-title">The weekly rhythm</h2><p class="panel-caption">No Monday morning scramble.</p></div></div>
+        </div>
+      </div>
+
+      <!-- ── Reference: read once, then out of the way ───────────────── -->
+      <div class="reference">
+        <details class="ref">
+          <summary>How it works <span class="ref-note">two weeks a month, two spaces, first come first served</span></summary>
+          <div class="ref-body">
             <div class="how">
-              <div class="step"><div class="step-num">01</div><div><b>Register</b><p>Thursday 09:00 to Friday 12:00.</p></div></div>
-              <div class="step"><div class="step-num">02</div><div><b>Allocate</b><p>The first two bookings keep the spaces.</p></div></div>
+              <div class="step"><div class="step-num">01</div><div><b>Register</b><p>Thursday 09:00 to Friday 12:00, for the following Monday. Or claim the week ahead in the monthly planner — both count the same.</p></div></div>
+              <div class="step"><div class="step-num">02</div><div><b>Allocate</b><p>The two spaces go to whoever booked the week first. Everyone gets two weeks a month, capped at 21 a year.</p></div></div>
               <div class="step"><div class="step-num">03</div><div><b>Exchange</b><p>Fobs are handed over Friday afternoon.</p></div></div>
               <div class="step"><div class="step-num">04</div><div><b>Return</b><p>Bring both fobs back the following Friday.</p></div></div>
             </div>
-          </section>
-        </aside>
+            <div class="admin"><span>Demo control — dry run, nothing is saved outside the real window</span><button id="toggleWindow">Preview open window</button></div>
+          </div>
+        </details>
+
+        <details class="ref">
+          <summary>Public holidays <span class="ref-note">Luxembourg</span></summary>
+          <div class="ref-body">
+            <div class="panel-head">
+              <div><p class="panel-caption">Holidays inside a week are flagged on that week in the planner.</p></div>
+              <div class="calendar-controls"><label class="mono" for="holidayYear" style="font-size:11px;color:var(--muted)">YEAR</label><select id="holidayYear" aria-label="Select calendar year"></select></div>
+            </div>
+            <div class="holiday-list" id="holidayList"></div>
+          </div>
+        </details>
+
+        <details class="ref">
+          <summary>Garage rules &amp; fob responsibility <span class="ref-note">a lost fob is charged at €100</span></summary>
+          <div class="ref-body">
+            <div class="etiquette-list">
+              <div class="etiquette-item"><div class="etiquette-icon">01</div><div><b>Enter and exit slowly</b><p>The garage is quite narrow. Take extra care when entering or leaving to avoid damaging your own car or another parked car. Any damage or associated costs are at the driver’s own expense.</p></div></div>
+              <div class="etiquette-item"><div class="etiquette-icon">02</div><div><b>Close the garage when you leave</b><p>The garage door does not close automatically. Before driving away, check that the door has fully closed and that the garage is secure.</p></div></div>
+              <div class="etiquette-item"><div class="etiquette-icon">03</div><div><b>Plan around Friday home office</b><p>Before registering, check whether you will be working from home on Friday. If you will not need the space for the full week, please do not take a weekly allocation unless you have agreed a respectful swap.</p></div></div>
+              <div class="etiquette-item"><div class="etiquette-icon">04</div><div><b>Check holidays and absences</b><p>Review public holidays, your holidays and other planned absences before registering. Opt out early when appropriate so the space can be allocated fairly to someone who will use it.</p></div></div>
+              <div class="etiquette-item"><div class="etiquette-icon">05</div><div><b>Respect the weekly allocation</b><p>Use the assigned space only for your allocated Monday–Friday week, return the fob on time, and communicate any change as soon as possible.</p></div></div>
+              <div class="etiquette-item"><div class="etiquette-icon">06</div><div><b>Lost fob: €100</b><p>A lost, damaged or unreturned fob is charged at <strong>€100</strong>. Keep it secure throughout the week, and return it on Friday afternoon.</p></div></div>
+            </div>
+          </div>
+        </details>
       </div>
-      <section class="panel calendar-panel">
-        <div class="panel-head">
-          <div><h2 class="panel-title">Luxembourg calendar</h2><p class="panel-caption">Public holidays are shown so weekly registrations stay predictable.</p></div>
-          <div class="calendar-controls"><label class="mono" for="holidayYear" style="font-size:11px;color:var(--muted)">YEAR</label><select id="holidayYear" aria-label="Select calendar year"></select></div>
-        </div>
-        <div class="holiday-list" id="holidayList"></div>
-        <div class="policy"><b>Fob responsibility:</b> Keep the assigned fob secure and return it on Friday afternoon. A lost or unreturned fob is charged at <strong>€100</strong>.</div>
-      </section>
-      <section class="panel etiquette">
-        <div class="panel-head">
-          <div><h2 class="panel-title">Garage etiquette &amp; responsibility</h2><p class="panel-caption">Please use the garage carefully and plan your week with consideration for colleagues.</p></div>
-        </div>
-        <div class="etiquette-list">
-          <div class="etiquette-item"><div class="etiquette-icon">01</div><div><b>Enter and exit slowly</b><p>The garage is quite narrow. Take extra care when entering or leaving to avoid damaging your own car or another parked car. Any damage or associated costs are at the driver’s own expense.</p></div></div>
-          <div class="etiquette-item"><div class="etiquette-icon">02</div><div><b>Close the garage when you leave</b><p>The garage door does not close automatically. Before driving away, check that the door has fully closed and that the garage is secure.</p></div></div>
-          <div class="etiquette-item"><div class="etiquette-icon">03</div><div><b>Plan around Friday home office</b><p>Before registering, check whether you will be working from home on Friday. If you will not need the space for the full week, please do not take a weekly allocation unless you have agreed a respectful swap.</p></div></div>
-          <div class="etiquette-item"><div class="etiquette-icon">04</div><div><b>Check holidays and absences</b><p>Review public holidays, your holidays and other planned absences before registering. Opt out early when appropriate so the space can be allocated fairly to someone who will use it.</p></div></div>
-          <div class="etiquette-item"><div class="etiquette-icon">05</div><div><b>Respect the weekly allocation</b><p>Use the assigned space only for your allocated Monday–Friday week, return the fob on time, and communicate any change as soon as possible.</p></div></div>
-          <div class="etiquette-item"><div class="etiquette-icon">06</div><div><b>Lost fob: €100</b><p>A lost, damaged or unreturned fob is charged at <strong>€100</strong>. Keep it secure throughout the week and return it on Friday afternoon.</p></div></div>
-        </div>
-      </section>
+
       <div class="footer"><span><strong>Eligible:</strong> Nadia · Laurence · Lara · Jil · Erik</span><span>Marc and Daniel have separate parking.</span></div>
     </main>
   </div>
@@ -1174,6 +1170,23 @@ try {
       const minutes = Number(now.hour) * 60 + Number(now.minute);
       return (now.weekdayNumber === 4 && minutes >= 9 * 60) || (now.weekdayNumber === 5 && minutes < 12 * 60);
     }
+    // Minutes until the window opens, or until it closes if it is open right now.
+    function registrationWindow() {
+      const now = luxembourgDateParts();
+      const day = now.weekdayNumber;
+      const mins = Number(now.hour) * 60 + Number(now.minute);
+      if (day === 4 && mins >= 540) return { open: true, minutes: (1440 - mins) + 720 };
+      if (day === 5 && mins < 720) return { open: true, minutes: 720 - mins };
+      let daysAhead = (4 - day + 7) % 7;
+      if (day === 4) daysAhead = 0; else if (daysAhead === 0) daysAhead = 7;
+      return { open: false, minutes: daysAhead * 1440 + 540 - mins };
+    }
+    function humanDuration(minutes) {
+      const d = Math.floor(minutes / 1440), h = Math.floor((minutes % 1440) / 60), m = minutes % 60;
+      if (d > 0) return `${d} day${d === 1 ? '' : 's'} ${h} h`;
+      if (h > 0) return `${h} h ${m} min`;
+      return `${Math.max(m, 1)} min`;
+    }
     function updateClock() {
       const now = new Date();
       document.getElementById('clock').innerHTML = `<span>${fmt(now, { weekday:'short', day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', timeZone:'Europe/Luxembourg' })}</span><span class="clock-zone"> · Luxembourg</span>`;
@@ -1197,7 +1210,7 @@ try {
         const date = fmt(item.date, { day: '2-digit', month: 'short' });
         return `<div class="holiday-row"><span><b>${item.name}</b></span><span>${day}, ${date}</span></div>`;
       }).join('');
-      document.getElementById('ledgerTitle').textContent = `${year} usage ledger`;
+      document.getElementById('ledgerTitle').textContent = `${year} usage`;
     }
     function setupHolidayYears() {
       const select = document.getElementById('holidayYear');
@@ -1226,34 +1239,40 @@ try {
         </div>`;
       }).join('');
     }
-    function renderSavedCalendar() {
-      const grid = document.getElementById('savedCalendarGrid');
-      const caption = document.getElementById('savedCalendarCaption');
-      const status = document.getElementById('savedCalendarStatus');
-      const waitlistText = document.getElementById('waitlistText');
+    // The two fob cards are the week view. They used to sit above a five-column table that
+    // repeated the same name across Monday to Friday, so the table said nothing the cards did
+    // not already say and cost a horizontal scroll to read.
+    function renderWeekSpaces() {
       const monday = nextMonday();
-      const days = Array.from({ length: 5 }, (_, index) => addDays(monday, index));
-      // The server returns candidates oldest booking first, which is the allocation order.
-      const ranked = [...state.registrations];
-      const saved = state.allocations.length
+      const ranked = [...state.serverRegistrations || []];
+      const confirmed = state.allocations.length > 0;
+      const holders = confirmed
         ? [...state.allocations].sort((a, b) => a.slot - b.slot).map(item => item.member)
         : ranked.slice(0, SPACES);
-      const waiting = state.allocations.length ? ranked.filter(name => !saved.includes(name)) : ranked.slice(SPACES);
-      const selectedYear = monday.getFullYear();
-      const weekText = `${fmt(monday, { day: '2-digit', month: 'short' })}–${fmt(addDays(monday, 4), { day: '2-digit', month: 'short' })} ${selectedYear}`;
-      caption.textContent = saved.length ? `Confirmed allocation for ${weekText}.` : `No confirmed allocation yet for ${weekText}.`;
-      status.textContent = `${saved.length} / ${SPACES} spaces saved`;
-      status.className = `status mono ${saved.length >= SPACES ? 'status-open' : 'status-closed'}`;
-      waitlistText.textContent = waiting.length ? `Waiting list: ${waiting.join(' · ')}` : '';
-      const headers = ['<div class="day-head corner">Space</div>', ...days.map(day => `<div class="day-head">${fmt(day, { weekday: 'short' })}<br>${fmt(day, { day: '2-digit', month: '2-digit' })}</div>`)].join('');
-      const rows = Array.from({ length: SPACES }, (_, index) => {
-        const name = saved[index];
-        // The first cell of each row carries .space-row: on narrow screens it is the only
-        // cell shown, because the five weekday columns just repeat the same name.
-        return `<div class="space-row"><span class="space-label">Space 0${index + 1}</span><span class="saved-name ${name ? '' : 'saved-empty'}">${name || 'Available'}</span><span class="space-week mono">${weekText} · Mon–Fri</span></div>${days.map(() => `<div><span class="saved-name ${name ? '' : 'saved-empty'}">${name || '—'}</span></div>`).join('')}`;
-      }).join('');
-      grid.innerHTML = headers + rows;
+      const waiting = confirmed ? ranked.filter(name => !holders.includes(name)) : ranked.slice(SPACES);
+      const weekText = `${fmt(monday, { day: '2-digit', month: 'short' })}–${fmt(addDays(monday, 4), { day: '2-digit', month: 'short' })}`;
+
+      [['fobA', 'fobAState'], ['fobB', 'fobBState']].forEach(([id, stateId], index) => {
+        const name = holders[index];
+        const el = document.getElementById(id);
+        const card = el.closest('.fob');
+        el.textContent = name || 'Available';
+        el.classList.toggle('is-empty', !name);
+        card.classList.toggle('is-provisional', Boolean(name) && !confirmed);
+        // Until Friday 12:00 the holder is only whoever booked first so far, and saying so
+        // is the difference between "you have the space" and "you are first in line".
+        document.getElementById(stateId).textContent = !name ? '' : confirmed ? 'Confirmed' : 'Provisional · first in line';
+      });
+
+      const status = document.getElementById('savedCalendarStatus');
+      status.textContent = `${holders.length} / ${SPACES} ${confirmed ? 'saved' : 'claimed'}`;
+      status.className = `status mono ${holders.length >= SPACES ? 'status-open' : 'status-closed'}`;
+      document.getElementById('savedCalendarCaption').textContent = confirmed
+        ? `Allocation confirmed for ${weekText}. Each name holds the space Monday to Friday.`
+        : `Not allocated yet — the two spaces lock in on Friday at 12:00 for ${weekText}.`;
+      document.getElementById('waitlistText').textContent = waiting.length ? `Waiting: ${waiting.join(' · ')}` : '';
     }
+
     // The month open for planning and the weeks it contains both come from the server, which
     // owns the "a week belongs to the month holding its Wednesday" rule. The browser used to
     // re-implement it against the local clock, so the two could disagree across a timezone
@@ -1285,7 +1304,7 @@ try {
       // the booking; grey the week out rather than letting the click fail.
       const atAnnualCap = year => (((state.ledger[year] || {}).usage || {})[active] || 0) >= ANNUAL_MAX;
       const monthLabel = fmt(new Date(nextMonth.year, nextMonth.monthIndex, 1), { month: 'long', year: 'numeric' });
-      document.querySelector('.month-planner-caption').textContent = `Only ${monthLabel} is open for planning. Every week has ${SPACES} spaces handed out first come, first served; once both are taken the week closes. Select a name to add weeks; any colleague may cancel an existing plan.`;
+      document.querySelector('.month-planner-caption').textContent = `${monthLabel} · ${SPACES} spaces a week, first come first served. Click to claim, click again to cancel.`;
       document.getElementById('plannerLimit').innerHTML = `<strong>${active}:</strong> ${monthlyLimit} week${monthlyLimit === 1 ? '' : 's'} per person in ${monthLabel} — the same quota for everyone, and weeks taken through the Thursday–Friday registration count towards it. ${activePlanCount} of ${monthlyLimit} used.`;
       const header = ['<div class="planner-head-cell planner-corner">Person / week</div>', ...weeks.map(week => {
         const taken = takenPerWeek[localDateKey(week)] || 0;
@@ -1303,13 +1322,26 @@ try {
           const limitReached = !planned && isActive && (activePlanCount >= monthlyLimit || atAnnualCap(week.getFullYear()));
           const weekFull = !planned && (takenPerWeek[key] || 0) >= SPACES;
           const disabled = !canChange || limitReached || weekFull;
-          const label = planned ? 'Cancel' : weekFull ? 'Full' : limitReached ? 'Limit' : holiday ? 'Holiday' : 'Plan';
           const seats = `${takenPerWeek[key] || 0} of ${SPACES} spaces taken`;
-          return `<div><button class="plan-cell ${planned ? 'selected' : ''} ${holiday ? 'holiday-plan' : ''} ${limitReached || weekFull ? 'locked' : ''}" data-week="${key}" data-person="${name}" ${disabled ? 'disabled' : ''} aria-label="${name}, week of ${fmt(week, { day: '2-digit', month: 'long', year: 'numeric' })}, ${planned ? 'planned' : 'not planned'}, ${seats}" title="${seats}">${label}</button></div>`;
+          const aria = `${name}, week of ${fmt(week, { day: '2-digit', month: 'long', year: 'numeric' })}, ${planned ? 'planned' : 'not planned'}, ${seats}`;
+          // Somebody else's empty cell is information, not a control.
+          if (!canChange) return `<div><span class="plan-idle" aria-label="${aria}" title="${seats}">${holiday ? 'Holiday' : '·'}</span></div>`;
+          const label = planned ? 'Cancel' : weekFull ? 'Full' : limitReached ? 'Limit' : holiday ? 'Holiday' : 'Plan';
+          return `<div><button class="plan-cell ${planned ? 'selected' : ''} ${holiday ? 'holiday-plan' : ''} ${limitReached || weekFull ? 'locked' : ''}" data-week="${key}" data-person="${name}" ${disabled ? 'disabled' : ''} aria-label="${aria}" title="${seats}">${label}</button></div>`;
         }).join('');
         return personCell + weekCells;
       }).join('');
       grid.innerHTML = header + rows;
+      // The template follows however many weeks the month has. Borders are marked per cell
+      // rather than with nth-child, which only worked for one particular column count.
+      grid.style.gridTemplateColumns = `minmax(88px, 116px) repeat(${weeks.length}, minmax(82px, 1fr))`;
+      grid.style.minWidth = `${88 + weeks.length * 82}px`;
+      const columns = weeks.length + 1;
+      const cells = [...grid.children];
+      cells.forEach((cell, index) => {
+        cell.classList.toggle('row-end', (index + 1) % columns === 0);
+        cell.classList.toggle('last-row', index >= cells.length - columns);
+      });
 
       // Narrow screens get one card per week instead of the people x weeks matrix,
       // which would otherwise need ~660px of horizontal scrolling to use.
@@ -1385,18 +1417,14 @@ try {
       const status = document.getElementById('windowStatus');
       status.className = `status ${open ? 'status-open' : 'status-closed'}`;
       status.innerHTML = `<i class="status-dot"></i><span>${open ? 'Registration open' : 'Registration closed'}</span>`;
-      document.getElementById('registerHelp').textContent = open ? `Select your name, then save. Only ${SPACES} spaces exist and they go first come, first served, so the week closes once both are taken. Each person can book ${MONTHLY_MAX} weeks a month. Registration locks at Friday 12:00.` : 'Registration is currently closed. It opens automatically during the Thursday–Friday window.';
+      const window_ = registrationWindow();
+      document.getElementById('registerHelp').textContent = open
+        ? `Select your name, then save. Two spaces, first come first served. Closes Friday 12:00 — ${humanDuration(window_.minutes)} left.`
+        : `Opens Thursday 09:00, in ${humanDuration(window_.minutes)}. You can still claim a week in the planner.`;
       document.getElementById('registrationCount').textContent = `${state.registrations.length} / ${SPACES}`;
       document.getElementById('registerBtn').disabled = !open || state.registrations.length === 0;
       document.getElementById('toggleWindow').textContent = open ? 'Close preview window' : 'Preview open window';
-      const allocationBySlot = Object.fromEntries((state.allocations || []).map(item => [item.slot, item.member]));
-      [['fobA', 1], ['fobB', 2]].forEach(([id, slot]) => {
-        const el = document.getElementById(id);
-        const member = allocationBySlot[slot];
-        el.textContent = member || 'Not allocated yet';
-        el.classList.toggle('is-empty', !member);
-      });
-      renderPeople(); renderLedger(); renderHolidays(); renderSavedCalendar(); renderPlanner(); setWeek();
+      renderPeople(); renderLedger(); renderHolidays(); renderWeekSpaces(); renderPlanner(); setWeek();
     }
     document.getElementById('toggleWindow').addEventListener('click', () => { state.openPreview = !state.openPreview; render(); });
     document.getElementById('registerBtn').addEventListener('click', async () => {
