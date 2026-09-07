@@ -5,7 +5,7 @@ date_default_timezone_set('Europe/Luxembourg');
 
 const PARKING_MEMBERS = ['Nadia', 'Laurence', 'Lara', 'Jil', 'Erik'];
 const PARKING_START_YEAR = 2026;
-const PARKING_END_YEAR = 2030;
+const PARKING_END_YEAR = 2035;
 const PARKING_ANNUAL_MAX = 21;
 const PARKING_MONTHLY_MAX = 2;
 const PARKING_SPACES = 2;
@@ -156,29 +156,6 @@ function parking_month_usage(PDO $pdo, int $year, int $month): array {
     $usage = array_fill_keys(PARKING_MEMBERS, 0);
     foreach ($stmt as $row) $usage[$row['member_name']] = (int)$row['total'];
     return $usage;
-}
-
-function parking_easter(int $year): DateTimeImmutable {
-    $date = easter_date($year);
-    return (new DateTimeImmutable('@' . $date))->setTimezone(new DateTimeZone('Europe/Luxembourg'))->setTime(0, 0);
-}
-
-function parking_holidays(int $year): array {
-    $easter = parking_easter($year);
-    $add = fn(int $days): string => $easter->modify("+$days days")->format('Y-m-d');
-    return [
-        ['date' => "$year-01-01", 'name' => 'New Year’s Day'],
-        ['date' => "$year-05-01", 'name' => 'Labour Day'],
-        ['date' => "$year-05-09", 'name' => 'Europe Day'],
-        ['date' => $add(1), 'name' => 'Easter Monday'],
-        ['date' => $add(39), 'name' => 'Ascension Day'],
-        ['date' => $add(50), 'name' => 'Whit Monday'],
-        ['date' => "$year-06-23", 'name' => 'National Day'],
-        ['date' => "$year-08-15", 'name' => 'Assumption Day'],
-        ['date' => "$year-11-01", 'name' => 'All Saints’ Day'],
-        ['date' => "$year-12-25", 'name' => 'Christmas Day'],
-        ['date' => "$year-12-26", 'name' => 'St Stephen’s Day'],
-    ];
 }
 
 function parking_after_cutoff(): bool {
@@ -1064,7 +1041,7 @@ try {
     let SERVER_CSRF = <?php echo parking_json(parking_csrf()); ?>;
     const people = ['Nadia', 'Laurence', 'Lara', 'Jil', 'Erik'];
     const START_YEAR = 2026;
-    const END_YEAR = 2030;
+    const END_YEAR = 2035;
     const ANNUAL_MAX = 21;
     const SPACES = SERVER_BOOTSTRAP.spaces || 2;
     const MONTHLY_MAX = SERVER_BOOTSTRAP.monthlyMax || 2;
@@ -1130,8 +1107,13 @@ try {
       }
     }
 
-    // Luxembourg public holidays, calculated for every year from 2026 through 2030.
-    // Easter Monday and Ascension are calculated from Easter Sunday; Whit Monday is 50 days later.
+    // The eleven Luxembourg legal public holidays, calculated for every year in the
+    // supported range. Eight are fixed dates; Easter Monday, Ascension (+39) and Whit Monday
+    // (+50) come from Easter Sunday via the Meeus/Jones/Butcher algorithm, checked against
+    // PHP's easter_date() for 2026-2035.
+    // A holiday landing on a weekend is listed but flags no week, which is right: it cannot
+    // fall inside a Monday-Friday parking week. Luxembourg grants a compensatory day for a
+    // Sunday holiday, but that is between the employee and the employer, not a parking rule.
     function easterSunday(year) {
       const a = year % 19, b = Math.floor(year / 100), c = year % 100;
       const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);

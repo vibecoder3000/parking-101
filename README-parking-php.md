@@ -146,8 +146,17 @@ Some things in here are deliberate, and some are simply not finished.
 - **The fob log is dead weight.** `fob_log`, the `fob_update` endpoint and the `lostFobFee`
   value in the state are all wired up server-side, but nothing in the page ever reads or
   writes them. The €100 fee shown on the page is fixed text.
-- **`parking_holidays()` is unused.** The holiday list is generated in the browser. The PHP
-  version needs `ext-calendar` for `easter_date()`, which is why nothing calls it.
+- **The holiday calendar is computed in the browser**, and covers 2026 to 2035. Eight of
+  Luxembourg's eleven legal public holidays are fixed dates; Easter Monday, Ascension and
+  Whit Monday are derived from Easter Sunday. Every year in the range was checked against
+  PHP's `easter_date()`. A duplicate PHP implementation used to sit beside it, unused and
+  needing `ext-calendar` (which the Docker image does not install, so it would have fatalled
+  if anything had ever called it); it has been removed rather than left to drift.
+- **A holiday on a weekend is listed but flags no week.** It cannot fall inside a
+  Monday–Friday parking week. Luxembourg grants a compensatory day for a Sunday holiday,
+  but that is between employee and employer, not a parking rule.
+- **To extend past 2035**, change `PARKING_END_YEAR` and the matching `END_YEAR` in the
+  browser code. Nothing else is year-bound.
 - **The two-space capacity spans two tables**, so no unique key can enforce it. Both booking
   routes take a MySQL named lock on the week instead, and the automatic allocation takes a
   second, separate lock so two page loads cannot both fill slot 1. `GET_LOCK` needs MySQL

@@ -8,3 +8,5 @@ _dbtest.py
 _race.py
 _alloctest.sh
 _faketime.Dockerfile
+_cal*.js
+_cal*.json
