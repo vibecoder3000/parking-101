@@ -647,7 +647,9 @@ try {
       padding: var(--s3) clamp(.8rem, 5vw, 4.5rem);
       display: flex; align-items: center; justify-content: space-between; gap: var(--s4);
     }
-    .brand { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
+    .brand { display: flex; align-items: center; gap: var(--s3); min-width: 0; overflow: hidden; }
+    .brand > div { min-width: 0; }
+    .brand-name, .brand-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .brand-mark {
       flex: none; width: 34px; height: 34px; border-radius: 50%; background: var(--orange);
       display: grid; place-items: center; color: var(--ink); font-size: var(--fs-sm); font-weight: 800;
@@ -679,6 +681,7 @@ try {
     .status-open { background: var(--mint); color: var(--mint-ink); }
     .status-closed { background: #eceff0; color: #5b686f; }
     .status-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .status-short { display: none; }
     .status-open .status-dot { animation: pulse 2.4s ease-in-out infinite; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 
@@ -897,12 +900,16 @@ try {
       .space-week { display: block; }
       .saved-calendar-foot { flex-direction: column; gap: var(--s1); }
     }
+    /* Below this the top bar cannot fit "Registration closed" beside the brand. */
+    @media (max-width: 420px) {
+      .status-long { display: none; }
+      .status-short { display: inline; }
+    }
     @media (max-width: 560px) {
       main { width: min(100% - 1.5rem, 1180px); }
       h1 { max-width: none; }
       .brand-sub { display: none; }
       .clock-zone { display: none; }
-      .brand-name { white-space: nowrap; }
       /* The open/closed state is worth more here than the date, and there is room for one. */
       .topbar-right .clock { display: none; }
       .fobs, .rules { grid-template-columns: 1fr; }
@@ -1407,7 +1414,7 @@ try {
       state.currentOpen = open;
       const status = document.getElementById('windowStatus');
       status.className = `status ${open ? 'status-open' : 'status-closed'}`;
-      status.innerHTML = `<i class="status-dot"></i><span>${open ? 'Registration open' : 'Registration closed'}</span>`;
+      status.innerHTML = `<i class="status-dot"></i><span class="status-long">Registration ${open ? 'open' : 'closed'}</span><span class="status-short">${open ? 'Open' : 'Closed'}</span>`;
       const window_ = registrationWindow();
       document.getElementById('registerHelp').textContent = open
         ? `Select your name, then save. Two spaces, first come first served. Closes Friday 12:00 — ${humanDuration(window_.minutes)} left.`
