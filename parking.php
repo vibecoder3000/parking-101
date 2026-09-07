@@ -110,6 +110,25 @@ function parking_next_month(): array {
     return ['year' => (int)$first->format('Y'), 'month' => (int)$first->format('n'), 'value' => $first->format('Y-m')];
 }
 
+// Every week that can be planned right now: from the coming Monday to the end of next month.
+// Planning used to open on next month only, which left a dead zone across the rest of the
+// current one — on Monday the 7th nobody could claim the week of the 14th, because the
+// planner refused it and the Thursday registration window had not opened yet.
+function parking_planner_weeks(): array {
+    $tz = new DateTimeZone('Europe/Luxembourg');
+    $now = new DateTimeImmutable('now', $tz);
+    $from = parking_monday($now)->format('Y-m-d');
+    $next = parking_next_month();
+    $weeks = array_merge(
+        parking_month_weeks((int)$now->format('Y'), (int)$now->format('n')),
+        parking_month_weeks($next['year'], $next['month'])
+    );
+    // The running week and anything before it are settled already, so they drop out here.
+    $weeks = array_values(array_unique(array_filter($weeks, fn(string $w): bool => $w >= $from)));
+    sort($weeks);
+    return $weeks;
+}
+
 // A Monday–Friday week belongs to the month holding its Wednesday, so every week counts
 // towards exactly one monthly quota even when it straddles two months.
 function parking_month_weeks(int $year, int $month): array {
@@ -315,11 +334,20 @@ function parking_state(PDO $pdo): array {
     parking_auto_allocate($pdo, $nextWeek);
     $nextMonth = parking_next_month();
     $plans = array_fill_keys(PARKING_MEMBERS, []);
-    $planWeeks = parking_month_weeks($nextMonth['year'], $nextMonth['month']);
+    $planWeeks = parking_planner_weeks();
     $allowed = array_flip($planWeeks);
     $stmt = $pdo->prepare('SELECT member_name, week_start FROM monthly_plans WHERE week_start BETWEEN ? AND ? ORDER BY week_start');
-    $stmt->execute([$planWeeks[0] ?? "$nextMonth[value]-01", end($planWeeks) ?? "$nextMonth[value]-31"]);
+    $stmt->execute([$planWeeks[0], end($planWeeks)]);
     foreach ($stmt as $row) if (isset($allowed[$row['week_start']])) $plans[$row['member_name']][$row['week_start']] = true;
+    // The horizon spans two calendar months and the two-a-month quota is counted per month,
+    // so the page needs to know which month owns each week, and the usage for both.
+    $weekMonths = [];
+    $monthUsage = [];
+    foreach ($planWeeks as $planWeek) {
+        $month = parking_week_month($planWeek);
+        $weekMonths[$planWeek] = $month['value'];
+        if (!isset($monthUsage[$month['value']])) $monthUsage[$month['value']] = parking_month_usage($pdo, $month['year'], $month['month']);
+    }
     // Occupancy per planning week, counted across both booking routes. The grid used to
     // count monthly plans only, so at a month boundary it offered a week the server refuses.
     $planWeekUsage = array_fill_keys($planWeeks, 0);
@@ -347,6 +375,8 @@ function parking_state(PDO $pdo): array {
         'monthlyPlans' => $plans,
         'planWeeks' => $planWeeks,
         'planWeekUsage' => $planWeekUsage,
+        'weekMonths' => $weekMonths,
+        'monthUsage' => $monthUsage,
         'registrations' => $registrations,
         'plannedNextWeek' => parking_week_planned($pdo, $nextWeek),
         'weeklyRegistered' => parking_week_registered($pdo, $nextWeek),
@@ -356,7 +386,6 @@ function parking_state(PDO $pdo): array {
         'ledger' => parking_ledger($pdo, PARKING_START_YEAR, PARKING_END_YEAR),
         'startYear' => PARKING_START_YEAR,
         'endYear' => PARKING_END_YEAR,
-        'planMonthUsage' => parking_month_usage($pdo, $nextMonth['year'], $nextMonth['month']),
         'weekMonthUsage' => parking_month_usage($pdo, $weekMonth['year'], $weekMonth['month']),
         'currentYear' => (int)$now->format('Y'),
         'registrationOpen' => parking_registration_open(),
@@ -438,9 +467,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $week = $weekDate->format('Y-m-d');
             }
             if ($weekDate->format('N') !== '1') parking_fail('A parking week must start on a Monday.');
-            $nextMonth = parking_next_month();
-            $allowedWeeks = parking_month_weeks($nextMonth['year'], $nextMonth['month']);
-            if (!in_array($week, $allowedWeeks, true)) parking_fail('Only weeks belonging to the next calendar month can be planned.');
+            if (!in_array($week, parking_planner_weeks(), true)) {
+                parking_fail('That week cannot be planned. Planning is open from next week to the end of next month.');
+            }
+            // The quota belongs to the month that owns the week, not to next month: the
+            // horizon now covers two months and each carries its own two-week allowance.
+            $planMonth = parking_week_month($week);
             parking_lock_week($pdo, $week);
             $pdo->beginTransaction();
             $exists = $pdo->prepare('SELECT COUNT(*) FROM monthly_plans WHERE member_name = ? AND week_start = ?');
@@ -448,8 +480,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             if ($planned && (int)$exists->fetchColumn() === 0) {
                 // Every member gets PARKING_MONTHLY_MAX weeks a month. Weekly registrations
                 // count against the same quota, so the two routes cannot be combined to get more.
-                $booked = array_diff(parking_member_month_weeks($pdo, $member, $nextMonth['year'], $nextMonth['month']), [$week]);
-                if (count($booked) >= PARKING_MONTHLY_MAX) parking_fail(sprintf('%s has already booked %d weeks in %s, the monthly maximum.', $member, PARKING_MONTHLY_MAX, $nextMonth['value']));
+                $booked = array_diff(parking_member_month_weeks($pdo, $member, $planMonth['year'], $planMonth['month']), [$week]);
+                if (count($booked) >= PARKING_MONTHLY_MAX) parking_fail(sprintf('%s has already booked %d weeks in %s, the monthly maximum.', $member, PARKING_MONTHLY_MAX, $planMonth['value']));
                 // Someone at the annual maximum is skipped by the allocation, so letting them
                 // book would fill a candidate slot and then leave the space unused.
                 if (parking_annual_count($pdo, $member, $week) >= PARKING_ANNUAL_MAX) {
@@ -668,7 +700,7 @@ try {
     .lede { color: var(--muted); max-width: 62ch; margin: 0; font-size: var(--fs-md); line-height: 1.55; }
 
     /* ── Panels ──────────────────────────────────────────── */
-    .grid { display: grid; grid-template-columns: minmax(0, .92fr) minmax(0, 1.22fr); gap: var(--s5); align-items: start; }
+    .grid { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.35fr); gap: var(--s5); align-items: start; }
     .panel { background: var(--white); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
     .panel-head { display: flex; justify-content: space-between; align-items: center; gap: var(--s4); border-bottom: 1px solid var(--line); padding: var(--s5) var(--pad); }
     .panel-title { margin: 0; font-size: var(--fs-lg); letter-spacing: -.035em; }
@@ -764,6 +796,12 @@ try {
     .planner-grid > div { min-height: 60px; padding: var(--s2); border-right: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); display: flex; align-items: center; }
     .planner-grid > div.row-end { border-right: 0; }
     .plan-idle { width: 100%; text-align: center; color: var(--faint); font-family: 'DM Mono', monospace; font-size: var(--fs-xs); }
+    /* Where one calendar month ends and the next begins — the quota resets on that line. */
+    .planner-grid > div.month-break { border-left: 2px solid var(--ink-soft); }
+    .planner-grid .planner-head-cell.month-break { box-shadow: inset 2px 0 0 var(--ink-soft); }
+    .planner-grid.is-dense .plan-cell { padding-left: 4px; padding-right: 4px; font-size: 11px; letter-spacing: -.01em; }
+    .head-holiday { display: inline-block; margin-top: 3px; padding: 1px 5px; border-radius: 99px; background: var(--orange-soft); color: var(--orange-ink); font-size: var(--fs-micro); letter-spacing: .04em; }
+    .week-card-month { margin: var(--s3) 0 0; font-family: 'DM Mono', monospace; font-size: var(--fs-micro); letter-spacing: .12em; text-transform: uppercase; color: var(--faint); }
     .planner-grid > div.last-row { border-bottom: 0; }
     .planner-grid .planner-head-cell { min-height: 64px; background: var(--wash); color: var(--muted); font-family: 'DM Mono', monospace; font-size: var(--fs-micro); letter-spacing: .06em; text-transform: uppercase; flex-direction: column; justify-content: center; align-items: flex-start; gap: 2px; line-height: 1.35; }
     .planner-grid .planner-corner { color: var(--ink); font-weight: 500; }
@@ -979,7 +1017,7 @@ try {
         <div class="stack">
           <section class="panel view-month" aria-live="polite">
           <div class="panel-head">
-            <div><h2 class="panel-title">Plan next month</h2><p class="panel-caption month-planner-caption"></p></div>
+            <div><h2 class="panel-title">Plan ahead</h2><p class="panel-caption month-planner-caption"></p></div>
             <div class="sec-aside month-planner-controls"><label class="mono sec-eyebrow" for="plannerUser">Book as</label><select id="plannerUser" aria-label="Select the person booking parking"></select></div>
           </div>
           <div class="month-body">
@@ -1083,10 +1121,11 @@ try {
       state.plannedNextWeek = serverState.plannedNextWeek || [];
       state.allocations = serverState.allocations || [];
       state.fobLog = serverState.fobLog || [];
-      state.planMonthUsage = serverState.planMonthUsage || {};
       state.weekMonthUsage = serverState.weekMonthUsage || {};
       state.planWeeks = serverState.planWeeks || [];
       state.planWeekUsage = serverState.planWeekUsage || {};
+      state.weekMonths = serverState.weekMonths || {};
+      state.monthUsage = serverState.monthUsage || {};
       state.ledger = serverState.ledger || state.ledger;
       // Europe/Luxembourg dates, decided by the server. Recomputing them from the browser
       // clock made a tab in another timezone — or simply one open past midnight — render and
@@ -1287,53 +1326,72 @@ try {
     }
     function renderPlanner() {
       const grid = document.getElementById('plannerGrid');
-      const nextMonth = getNextPlanningMonth();
-      const weeks = (state.planWeeks || []).map(parseDateKey);
+      const weekKeys = state.planWeeks || [];
+      const weeks = weekKeys.map(parseDateKey);
       const active = state.currentUser;
       const activePlans = state.monthlyPlans[active] || {};
       const monthlyLimit = MONTHLY_MAX;
-      // Counted by the server, so a week taken through the weekly registration also
-      // fills part of the monthly quota.
-      const activePlanCount = (state.planMonthUsage || {})[active] ?? Object.keys(activePlans).length;
+      // The horizon runs from next week to the end of next month, so it straddles two
+      // calendar months and each carries its own quota. Counted by the server, so a week
+      // taken through the weekly registration fills part of the same allowance.
+      const monthOf = key => (state.weekMonths || {})[key];
+      const usedIn = (month, name) => ((state.monthUsage || {})[month] || {})[name] || 0;
+      const monthLabelOf = month => fmt(parseDateKey(month + '-01'), { month: 'long', year: 'numeric' });
+      const monthsShown = [...new Set(weekKeys.map(monthOf))].filter(Boolean);
       // Occupancy across both booking routes, counted by the server. Counting monthly plans
       // alone showed a free space on weeks the weekly registration had already filled.
       const takenPerWeek = state.planWeekUsage || {};
       // Someone at the annual maximum is skipped by the allocation, so the server refuses
       // the booking; grey the week out rather than letting the click fail.
       const atAnnualCap = year => (((state.ledger[year] || {}).usage || {})[active] || 0) >= ANNUAL_MAX;
-      const monthLabel = fmt(new Date(nextMonth.year, nextMonth.monthIndex, 1), { month: 'long', year: 'numeric' });
-      document.querySelector('.month-planner-caption').textContent = `${monthLabel} · ${SPACES} spaces a week, first come first served. Click to claim, click again to cancel.`;
-      document.getElementById('plannerLimit').innerHTML = `<strong>${active}:</strong> ${monthlyLimit} week${monthlyLimit === 1 ? '' : 's'} per person in ${monthLabel} — the same quota for everyone, and weeks taken through the Thursday–Friday registration count towards it. ${activePlanCount} of ${monthlyLimit} used.`;
-      const header = ['<div class="planner-head-cell planner-corner">Person / week</div>', ...weeks.map(week => {
-        const taken = takenPerWeek[localDateKey(week)] || 0;
-        return `<div class="planner-head-cell">${fmt(week, { day: '2-digit', month: 'short' })}<br>${fmt(addDays(week, 4), { day: '2-digit', month: 'short' })}<br><span class="planner-head-seats ${taken >= SPACES ? 'is-full' : ''}">${taken}/${SPACES}</span></div>`;
+      const span = weeks.length
+        ? `${fmt(weeks[0], { day: '2-digit', month: 'short' })} – ${fmt(addDays(weeks[weeks.length - 1], 4), { day: '2-digit', month: 'short' })}`
+        : '';
+      document.querySelector('.month-planner-caption').textContent = `${span} · ${SPACES} spaces a week, first come first served. Click to claim, click again to cancel.`;
+      const quota = monthsShown.map(m => `${usedIn(m, active)} of ${monthlyLimit} in ${monthLabelOf(m).split(' ')[0]}`).join(' · ');
+      document.getElementById('plannerLimit').innerHTML = `<strong>${active}:</strong> ${monthlyLimit} weeks per person per calendar month, and weeks taken through the Thursday–Friday registration count towards the same allowance. Used: ${quota}.`;
+      const header = ['<div class="planner-head-cell planner-corner">Person / week</div>', ...weeks.map((week, i) => {
+        const key = weekKeys[i];
+        const taken = takenPerWeek[key] || 0;
+        // Mark where one calendar month ends and the next begins, since the quota resets there.
+        const newMonth = i > 0 && monthOf(key) !== monthOf(weekKeys[i - 1]);
+        const hol = luxembourgHolidays(week.getFullYear()).filter(item => item.date >= week && item.date <= addDays(week, 4));
+        const holMark = hol.length
+          ? `<span class="head-holiday" title="${hol.map(x => `${x.name}, ${fmt(x.date, { weekday: 'long' })}`).join(' · ')}" aria-label="Public holiday this week">Holiday</span>`
+          : '';
+        return `<div class="planner-head-cell ${newMonth ? 'month-break' : ''}">${fmt(week, { day: '2-digit', month: 'short' })}<br>${fmt(addDays(week, 4), { day: '2-digit', month: 'short' })}<br><span class="planner-head-seats ${taken >= SPACES ? 'is-full' : ''}">${taken}/${SPACES}</span>${holMark}</div>`;
       })].join('');
       const rows = people.map(name => {
         const isActive = name === active;
         const plans = state.monthlyPlans[name] || {};
         const personCell = `<div><span class="planner-person ${isActive ? 'active' : ''}">${name}${isActive ? ' · selected' : ''}</span></div>`;
-        const weekCells = weeks.map(week => {
-          const key = localDateKey(week);
+        const weekCells = weeks.map((week, i) => {
+          const key = weekKeys[i];
           const holiday = luxembourgHolidays(week.getFullYear()).some(item => item.date >= week && item.date <= addDays(week, 4));
           const planned = Boolean(plans[key]);
           const canChange = planned || isActive;
-          const limitReached = !planned && isActive && (activePlanCount >= monthlyLimit || atAnnualCap(week.getFullYear()));
+          const newMonth = i > 0 && monthOf(key) !== monthOf(weekKeys[i - 1]);
+          const limitReached = !planned && isActive && (usedIn(monthOf(key), active) >= monthlyLimit || atAnnualCap(week.getFullYear()));
           const weekFull = !planned && (takenPerWeek[key] || 0) >= SPACES;
           const disabled = !canChange || limitReached || weekFull;
           const seats = `${takenPerWeek[key] || 0} of ${SPACES} spaces taken`;
           const aria = `${name}, week of ${fmt(week, { day: '2-digit', month: 'long', year: 'numeric' })}, ${planned ? 'planned' : 'not planned'}, ${seats}`;
           // Somebody else's empty cell is information, not a control.
-          if (!canChange) return `<div><span class="plan-idle" aria-label="${aria}" title="${seats}">${holiday ? 'Holiday' : '·'}</span></div>`;
-          const label = planned ? 'Cancel' : weekFull ? 'Full' : limitReached ? 'Limit' : holiday ? 'Holiday' : 'Plan';
-          return `<div><button class="plan-cell ${planned ? 'selected' : ''} ${holiday ? 'holiday-plan' : ''} ${limitReached || weekFull ? 'locked' : ''}" data-week="${key}" data-person="${name}" ${disabled ? 'disabled' : ''} aria-label="${aria}" title="${seats}">${label}</button></div>`;
+          if (!canChange) return `<div class="${newMonth ? 'month-break' : ''}"><span class="plan-idle" aria-label="${aria}" title="${seats}">·</span></div>`;
+          const label = planned ? 'Cancel' : weekFull ? 'Full' : limitReached ? 'Limit' : 'Plan';
+          return `<div class="${newMonth ? 'month-break' : ''}"><button class="plan-cell ${planned ? 'selected' : ''} ${holiday ? 'holiday-plan' : ''} ${limitReached || weekFull ? 'locked' : ''}" data-week="${key}" data-person="${name}" ${disabled ? 'disabled' : ''} aria-label="${aria}" title="${seats}">${label}</button></div>`;
         }).join('');
         return personCell + weekCells;
       }).join('');
       grid.innerHTML = header + rows;
       // The template follows however many weeks the month has. Borders are marked per cell
       // rather than with nth-child, which only worked for one particular column count.
-      grid.style.gridTemplateColumns = `minmax(88px, 116px) repeat(${weeks.length}, minmax(82px, 1fr))`;
-      grid.style.minWidth = `${88 + weeks.length * 82}px`;
+      // The horizon is 4-9 weeks depending on where the month boundary falls (9 on 54 days a
+      // decade), so the cells are sized to fit the widest case rather than clip its last column.
+      grid.style.gridTemplateColumns = `minmax(76px, 104px) repeat(${weeks.length}, minmax(64px, 1fr))`;
+      grid.style.minWidth = `${76 + weeks.length * 64}px`;
+      // Eight or nine columns leave "Cancel" a few pixels short at the normal size.
+      grid.classList.toggle('is-dense', weeks.length >= 8);
       const columns = weeks.length + 1;
       const cells = [...grid.children];
       cells.forEach((cell, index) => {
@@ -1343,17 +1401,20 @@ try {
 
       // Narrow screens get one card per week instead of the people x weeks matrix,
       // which would otherwise need ~660px of horizontal scrolling to use.
-      document.getElementById('plannerCards').innerHTML = weeks.map(week => {
-        const key = localDateKey(week);
+      document.getElementById('plannerCards').innerHTML = weeks.map((week, i) => {
+        const key = weekKeys[i];
         const taken = takenPerWeek[key] || 0;
         const holders = people.filter(name => (state.monthlyPlans[name] || {})[key]);
         const holiday = luxembourgHolidays(week.getFullYear()).some(item => item.date >= week && item.date <= addDays(week, 4));
         const planned = holders.includes(active);
-        const limitReached = !planned && (activePlanCount >= monthlyLimit || atAnnualCap(week.getFullYear()));
+        const limitReached = !planned && (usedIn(monthOf(key), active) >= monthlyLimit || atAnnualCap(week.getFullYear()));
+        // Cards run continuously down the screen, so name the month when it turns over.
+        const monthHeading = (i === 0 || monthOf(key) !== monthOf(weekKeys[i - 1]))
+          ? `<div class="week-card-month">${monthLabelOf(monthOf(key))}</div>` : '';
         const weekFull = !planned && taken >= SPACES;
         const label = planned ? `Cancel ${active}’s plan` : weekFull ? 'Week full' : limitReached ? `${active} has reached the monthly limit` : `Plan this week as ${active}`;
         const range = `${fmt(week, { day: '2-digit', month: 'short' })} – ${fmt(addDays(week, 4), { day: '2-digit', month: 'short' })}`;
-        return `<div class="week-card ${weekFull ? 'is-full' : ''} ${planned ? 'is-mine' : ''}">
+        return monthHeading + `<div class="week-card ${weekFull ? 'is-full' : ''} ${planned ? 'is-mine' : ''}">
           <div class="week-card-top">
             <div>
               <div class="week-card-date">${range}</div>

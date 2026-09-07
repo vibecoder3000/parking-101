@@ -23,18 +23,24 @@ The point of the app is that these are checked on the server, not left to good m
 | Spaces in the garage | **2** |
 | Weeks per person per month | **2** |
 | Weeks per person per year | **21** |
+| Planning horizon | **Next week → end of next month** |
 | Registration window | **Thursday 09:00 → Friday 12:00** (Europe/Luxembourg) |
 | Allocation | Friday 12:00, to whoever booked the week first |
 
 Two ways to claim a week, sharing one quota:
 
-- **The monthly planner** — claim a week of next month whenever you like.
+- **The planner** — claim any week from next week to the end of next month, at any time.
 - **The weekly registration** — grab whatever is still free for next week, during the
   Thursday–Friday window.
 
 A week taken through either route counts the same, so the two cannot be combined to get a
 third week. A Monday–Friday week belongs to the month holding its **Wednesday**, so a week
-straddling two months counts against exactly one of them.
+straddling two months counts against exactly one of them — and because the horizon spans two
+calendar months, each carries its own two-week allowance.
+
+The planner starts at *next* week rather than next month for a reason: it used to open on
+next month only, which left a dead zone. On Monday the 7th nobody could claim the week of the
+14th, because the planner refused it and the Thursday registration window had not opened yet.
 
 At Friday noon the two spaces go to the two people who booked the week earliest. Anyone
 already at 21 weeks for the year is skipped and the space passes down the queue.
